@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import xyproter; from xyproter import rasterize, skeletonize_stage, spur_pruning, graph_build, intersection_merge, path_extraction, pipeline, preview, cli; print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/ -v --ignore=tests/test_svg_export.py --ignore=tests/test_gcode_export.py)",
+      "Bash(python -c ' *)",
+      "Bash(python scripts/visualize_stage.py --char 永 --font \"C:/Windows/Fonts/msmincho.ttc\" --out output/stage_ei.png)",
+      "Bash(python -m xyproter \"永語あアABC\" --font \"C:/Windows/Fonts/msmincho.ttc\" --cell-px 400 --font-size 300 --canvas-mm 210 60 --out-dir output)"
+    ]
+  }
+}
