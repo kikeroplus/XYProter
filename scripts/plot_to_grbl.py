@@ -6,9 +6,9 @@
 
     1. まず --dry-run で実行し、output/grbl_preview.png と output/grbl_output.gcode
        の内容を必ず目視確認する。
-    2. 実機の電源を入れた直後の状態で、キャリッジが可動範囲の隅（+X, +Yへの移動代が
-       描画範囲以上残っている位置）にあり、ペンが紙の上・安全な待機高さにあることを
-       確認する。
+    2. 実機の電源を入れた直後の状態で、キャリッジが「書き始めたい文字の左上」に
+       あり、そこから+X(右)・-Y(下)への移動代が描画範囲以上残っていること、
+       ペンが紙の上・安全な待機高さにあることを確認する。
     3. --outline-check を付けて実行し、ペンアップのまま描画範囲の外周だけを低速で
        なぞらせ、実際に可動範囲内に収まるか目視確認する（インクは出ない）。
        異常があればすぐ電源を切って止めること。
@@ -49,6 +49,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--travel-feed", type=float, default=600.0, help="ペンアップ移動速度(mm/min)")
     parser.add_argument("--z-down-mm", type=float, default=3.0, help="待機位置から紙までのZ下降量(mm)")
     parser.add_argument("--z-feed", type=float, default=200.0, help="Z軸送り速度(mm/min)")
+    parser.add_argument(
+        "--final-lift-mm", type=float, default=15.0, help="描画完了後、ペンをさらに退避させる追加上昇量(mm)"
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("output"))
     parser.add_argument("--port", default=None, help="例: COM17（指定時のみ実機へ送信する）")
     parser.add_argument("--baud", type=int, default=115200)
@@ -62,6 +65,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="実際の描画の代わりに、ペンアップのまま描画範囲の外周だけを低速でなぞる安全確認を行う",
     )
     parser.add_argument("--outline-feed", type=float, default=100.0, help="外周確認時の送り速度(mm/min)")
+    parser.add_argument(
+        "--letter-spacing",
+        type=float,
+        default=1.0,
+        help="文字間隔の倍率(セル幅に対する列方向配置ピッチ)。既定1.0、1未満で文字間を詰める",
+    )
+    parser.add_argument(
+        "--simplify-tolerance-mm",
+        type=float,
+        default=None,
+        help="高速描画モード: 指定するとポリラインをこの許容誤差(mm)でDouglas-Peucker単純化し、"
+        "G-code行数を大幅に減らして描画を高速化する。省略時(既定)は間引きなし(モード1、従来動作)",
+    )
     return parser
 
 
@@ -71,7 +87,7 @@ def _run_outline_check(args: argparse.Namespace, canvas_w_mm: float, canvas_h_mm
     インクは一切出ない（Zは動かさない）。実際の文字描画を行う前に、
     電源投入位置から見てこの範囲が本当に安全かどうかを目視確認するためのモード。
     """
-    print(f"[外周確認モード] 範囲: X 0-{canvas_w_mm:.1f}mm, Y 0-{canvas_h_mm:.1f}mm")
+    print(f"[外周確認モード] 範囲: X 0〜{canvas_w_mm:.1f}mm, Y 0〜-{canvas_h_mm:.1f}mm")
     print("ペンは動かさず(Zコマンドなし)、XYだけを外周に沿って低速で動かします。")
 
     lines = build_outline_check_gcode(canvas_w_mm, canvas_h_mm, feed_rate=args.outline_feed)
@@ -87,7 +103,7 @@ def _run_outline_check(args: argparse.Namespace, canvas_w_mm: float, canvas_h_mm
     print()
     print("=" * 60)
     print("外周確認を実機に送信します。以下を必ず確認してください:")
-    print("  - 電源投入直後のキャリッジ位置がこの矩形の(0,0)角に対応していること")
+    print("  - 電源投入直後のキャリッジ位置が、この矩形の(0,0)角＝書き始めたい文章の左上に対応していること")
     print(f"  - 送り速度は{args.outline_feed:.0f}mm/minと低速なので、異常があればすぐ電源を切れる態勢でいること")
     print("  - Zは動かさないため、ペンが紙に触れることはありません")
     print("=" * 60)
@@ -126,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
     text = args.text.replace("\\n", "\n")
     n_cols = max((len(line) for line in text.split("\n")), default=1)
     n_rows = len(text.split("\n"))
-    canvas_w_mm = args.size_mm * n_cols
+    canvas_w_mm = args.size_mm * (max(n_cols - 1, 0) * args.letter_spacing + 1)
     canvas_h_mm = args.size_mm * n_rows
 
     if args.outline_check:
@@ -139,6 +155,8 @@ def main(argv: list[str] | None = None) -> None:
         font_size_pt=args.font_size,
         cell_px=(args.cell_px, args.cell_px),
         canvas_size_mm=(canvas_w_mm, canvas_h_mm),
+        simplify_tolerance_mm=args.simplify_tolerance_mm,
+        letter_spacing_factor=args.letter_spacing,
     )
 
     glyph_results, job = run_text_pipeline(text, config)
@@ -151,7 +169,8 @@ def main(argv: list[str] | None = None) -> None:
         if gr.merge_warnings:
             print(f"[警告][{gr.raster.char}]", *gr.merge_warnings)
     print(job.stats.summary())
-    print(f"描画範囲: X 0-{canvas_w_mm:.1f}mm, Y 0-{canvas_h_mm:.1f}mm")
+    actual_w_mm, actual_h_mm = job.canvas_size_mm
+    print(f"描画範囲: X 0〜{actual_w_mm:.1f}mm, Y 0〜-{actual_h_mm:.1f}mm (原点=1文字目の左上)")
 
     violations = check_xy_bounds(job, max_x=args.max_x, max_y=args.max_y)
     if violations:
@@ -165,7 +184,9 @@ def main(argv: list[str] | None = None) -> None:
     fig.savefig(preview_path, dpi=150)
     print(f"プレビュー画像: {preview_path}")
 
-    pen = RelativeZPenController(down_travel_mm=args.z_down_mm, z_feed=args.z_feed)
+    pen = RelativeZPenController(
+        down_travel_mm=args.z_down_mm, z_feed=args.z_feed, final_lift_mm=args.final_lift_mm
+    )
     lines = build_gcode_lines(job, pen=pen, feed_rate=args.draw_feed, travel_feed_rate=args.travel_feed)
     gcode_path = args.out_dir / "grbl_output.gcode"
     gcode_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -46,10 +46,11 @@ def parse_status(status_line: str) -> dict:
 
 
 def check_xy_bounds(job: PlotJob, max_x: float, max_y: float) -> list[str]:
-    """PlotJobのXY座標が機体の可動範囲[0, max_x] x [0, max_y]に収まっているか確認する。
+    """PlotJobのXY座標が機体の可動範囲[0, max_x] x [-max_y, 0]に収まっているか確認する。
 
-    原点(0,0)は、実機でユーザーがペンをジョグして作業原点として
-    ゼロ点設定した位置に対応させることを前提とする。
+    原点(0,0)は、実機でユーザーが「書き始めたい文字の左上」にペンをジョグして
+    作業原点としてゼロ点設定した位置に対応させることを前提とする。文章は
+    そこからX+(右)・Y-(下)方向へ展開されるため、Yの許容範囲は0以下になる。
     """
     violations: list[str] = []
     for poly in job.polylines:
@@ -59,18 +60,21 @@ def check_xy_bounds(job: PlotJob, max_x: float, max_y: float) -> list[str]:
         ys = poly.points[:, 1]
         if xs.min() < -0.01 or xs.max() > max_x + 0.01:
             violations.append(f"X座標が範囲外です: {xs.min():.2f}〜{xs.max():.2f}mm (上限{max_x}mm)")
-        if ys.min() < -0.01 or ys.max() > max_y + 0.01:
-            violations.append(f"Y座標が範囲外です: {ys.min():.2f}〜{ys.max():.2f}mm (上限{max_y}mm)")
+        if ys.min() < -max_y - 0.01 or ys.max() > 0.01:
+            violations.append(f"Y座標が範囲外です: {ys.min():.2f}〜{ys.max():.2f}mm (下限-{max_y}mm)")
     return violations
 
 
 class GrblConnection:
     """pyserial経由でGRBLと通信する薄いラッパー。"""
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 5.0):
+    def __init__(
+        self, port: str, baudrate: int = 115200, timeout: float = 2.0, response_timeout: float = 60.0
+    ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.response_timeout = response_timeout  # send_line()が'ok'を待つ合計上限(秒)
         self._ser = None
 
     def connect(self) -> str:
@@ -108,16 +112,30 @@ class GrblConnection:
         return self.send_line("G92 X0 Y0 Z0")
 
     def send_line(self, line: str) -> str:
-        """1行送信し、'ok'または'error:'応答が返るまでブロックする。"""
+        """1行送信し、'ok'または'error:'応答が返るまでブロックする。
+
+        GRBLの'ok'は「行を受理してプランナーバッファに積んだ」ことを意味し、
+        バッファ(15ブロック程度)が一杯の間は、実行が進んで空きができるまで
+        応答そのものを保留する。これは正常なフロー制御なので、1回の
+        readline()タイムアウト(self.timeout)だけで即エラーにはせず、
+        合計response_timeout秒に達するまでは無応答をリトライ扱いにする。
+        """
         assert self._ser is not None, "connect()を先に呼んでください"
         payload = line.strip()
         if not payload:
             return ""
         self._ser.write((payload + "\n").encode())
+        elapsed = 0.0
         while True:
             raw = self._ser.readline()
             if not raw:
-                raise GrblError(f"応答タイムアウト: 送信行 '{payload}' に対する応答がありません")
+                elapsed += self.timeout
+                if elapsed >= self.response_timeout:
+                    raise GrblError(
+                        f"応答タイムアウト({self.response_timeout:.0f}秒): "
+                        f"送信行 '{payload}' に対する応答がありません"
+                    )
+                continue
             resp = raw.decode(errors="replace").strip()
             if not resp:
                 continue

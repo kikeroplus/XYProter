@@ -16,6 +16,7 @@ def build_gcode_lines(
     pen: PenController | None = None,
     feed_rate: float = 1500.0,
     travel_feed_rate: float = 3000.0,
+    return_to_origin: bool = True,
 ) -> list[str]:
     pen = pen or ZAxisPenController()
     lines: list[str] = []
@@ -36,6 +37,12 @@ def build_gcode_lines(
         lines.append(f"G0 F{travel_feed_rate:.1f}")
 
     lines.extend(pen.teardown())
+    if return_to_origin:
+        # Zは既にteardownで退避済みなので、その高さのままXYだけ原点へ戻す。
+        # 呼び出し側が送信のたびにG92でその時点の物理位置を(0,0,0)へ再定義する
+        # 運用のため、これにより次回送信は毎回同じ座標系で描画される(同じ位置をなぞる)。
+        lines.append(f"G0 F{travel_feed_rate:.1f}")
+        lines.append("G0 X0.000 Y0.000")
     return lines
 
 
@@ -45,10 +52,11 @@ def build_outline_check_gcode(width_mm: float, height_mm: float, feed_rate: floa
     原点復帰やソフト/ハードリミットが無効な機体では、電源投入時の
     キャリッジ位置がそのまま機械原点として扱われるため、実際に描画する前に
     「この矩形の範囲が本当に安全に動けるか」を、インクを一切出さずに
-    低速で確認できるようにする。
+    低速で確認できるようにする。原点(0,0)は「書き始めたい文字の左上」に
+    対応させる想定のため、矩形はX+(右)・Y-(下)方向に展開する。
     """
     x0, y0 = 0.0, 0.0
-    x1, y1 = width_mm, height_mm
+    x1, y1 = width_mm, -height_mm
     lines = [
         "G21",
         "G90",

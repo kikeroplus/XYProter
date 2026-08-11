@@ -81,8 +81,10 @@ def _rebuild_graph_from_dsu(graph: SkeletonGraph, dsu: _DSU) -> SkeletonGraph:
     for edge in graph.edges.values():
         new_a = old_to_new[edge.node_a]
         new_b = old_to_new[edge.node_b]
-        if new_a == new_b and edge.node_a != edge.node_b:
-            continue  # 統合により内部エッジ化したものは破棄
+        # 統合により内部エッジ化したもの(new_a == new_b)も、実際の画素列(輪の一部等)を
+        # 表しているため破棄せず自己ループとして保持する。path_extraction側は
+        # 自己ループを正しく扱える(_pick_start_nodeはnode_a/node_bを別々にカウントするため
+        # degreeへの寄与が+2になる)。破棄すると輪(結び)の一部が描画されなくなるバグになる。
         new_edges[next_edge_id] = SkeletonEdge(
             id=next_edge_id,
             node_a=new_a,

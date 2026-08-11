@@ -30,26 +30,35 @@ def _job_with_points(points: list[tuple[float, float]]) -> PlotJob:
 
 
 def test_check_xy_bounds_within_range_has_no_violations():
-    job = _job_with_points([[0.0, 0.0], [50.0, 100.0], [199.9, 199.9]])
+    # 原点(0,0)=先頭文字の左上、Yは0以下(下方向)が正常範囲
+    job = _job_with_points([[0.0, 0.0], [50.0, -100.0], [199.9, -199.9]])
     assert check_xy_bounds(job, max_x=200.0, max_y=200.0) == []
 
 
 def test_check_xy_bounds_detects_x_overflow():
-    job = _job_with_points([[0.0, 0.0], [250.0, 10.0]])
+    job = _job_with_points([[0.0, 0.0], [250.0, -10.0]])
     violations = check_xy_bounds(job, max_x=200.0, max_y=200.0)
     assert len(violations) == 1
     assert "X座標" in violations[0]
 
 
-def test_check_xy_bounds_detects_negative_coordinate():
-    job = _job_with_points([[-5.0, 0.0], [10.0, 10.0]])
+def test_check_xy_bounds_detects_negative_x_coordinate():
+    job = _job_with_points([[-5.0, 0.0], [10.0, -10.0]])
     violations = check_xy_bounds(job, max_x=200.0, max_y=200.0)
     assert len(violations) == 1
     assert "X座標" in violations[0]
+
+
+def test_check_xy_bounds_detects_positive_y_coordinate():
+    # Y>0(原点より上)は書き始めの文字より上にはみ出すので範囲外
+    job = _job_with_points([[0.0, 0.0], [10.0, 5.0]])
+    violations = check_xy_bounds(job, max_x=200.0, max_y=200.0)
+    assert len(violations) == 1
+    assert "Y座標" in violations[0]
 
 
 def test_check_xy_bounds_detects_both_axes():
-    job = _job_with_points([[0.0, 0.0], [250.0, 300.0]])
+    job = _job_with_points([[0.0, 0.0], [250.0, -300.0]])
     violations = check_xy_bounds(job, max_x=200.0, max_y=200.0)
     assert len(violations) == 2
 
@@ -70,6 +79,22 @@ def test_send_line_raises_on_error_response():
         assert False, "GrblErrorが送出されるはず"
     except GrblError as e:
         assert "error:9" in str(e)
+
+
+def test_send_line_retries_through_transient_empty_responses():
+    conn = GrblConnection("COM_FAKE", timeout=2.0, response_timeout=10.0)
+    conn._ser = _FakeSerial(responses=[b"", b"", b"ok\n"])
+    assert conn.send_line("G1 X10") == "ok"
+
+
+def test_send_line_raises_after_exceeding_response_timeout():
+    conn = GrblConnection("COM_FAKE", timeout=2.0, response_timeout=5.0)
+    conn._ser = _FakeSerial(responses=[b"", b"", b"", b"ok\n"])  # 3回空応答 = 6.0秒 > 5.0秒
+    try:
+        conn.send_line("G1 X10")
+        assert False, "GrblErrorが送出されるはず"
+    except GrblError as e:
+        assert "タイムアウト" in str(e)
 
 
 def test_send_line_raises_on_alarm_response():

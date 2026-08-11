@@ -99,7 +99,7 @@ def render_grid_preview(job: PlotJob, pen_width_mm: float = 0.5, show_travel: bo
         prev_end = pts[-1]
 
     ax.set_xlim(0, width_mm)
-    ax.set_ylim(0, height_mm)
+    ax.set_ylim(-height_mm, 0)  # 原点=左上、Y-方向が下
     ax.set_aspect("equal")
     ax.set_title(job.stats.summary(), fontsize=9, wrap=True)
     fig.tight_layout()

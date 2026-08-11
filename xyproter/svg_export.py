@@ -20,12 +20,12 @@ def build_svg(job: PlotJob, stroke_width_mm: float = 0.5, stroke_color: str = "b
         if len(pts) == 1:
             x, y = pts[0]
             parts.append(
-                f'<circle cx="{x:.3f}" cy="{height_mm - y:.3f}" r="{stroke_width_mm / 2:.3f}" '
+                f'<circle cx="{x:.3f}" cy="{-y:.3f}" r="{stroke_width_mm / 2:.3f}" '
                 f'fill="{stroke_color}"/>'
             )
             continue
-        # SVGはy軸が下向きなので、mm座標(y軸上向き)から変換する
-        points_attr = " ".join(f"{x:.3f},{height_mm - y:.3f}" for x, y in pts)
+        # mm座標は原点=左上・Y-方向が下(既にSVGと同じ向き)なので符号反転のみで変換できる
+        points_attr = " ".join(f"{x:.3f},{-y:.3f}" for x, y in pts)
         parts.append(
             f'<polyline points="{points_attr}" fill="none" stroke="{stroke_color}" '
             f'stroke-width="{stroke_width_mm:.3f}" stroke-linecap="round" stroke-linejoin="round"/>'

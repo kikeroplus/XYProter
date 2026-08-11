@@ -29,7 +29,9 @@ def test_merge_does_not_touch_endpoints_even_if_close():
 
 
 def test_merge_transitively_collapses_chain_of_junctions():
-    # J1-J2-J3 が数珠つなぎに近接している場合、1パスで1ノードに統合される
+    # J1-J2-J3 が数珠つなぎに近接している場合、1パスで1ノードに統合される。
+    # 統合前のエッジは実画素列(輪の一部等になり得る)を表すため、破棄せず
+    # 自己ループとして残す(破棄すると「な」「ま」の結びの丸が消えるバグになる)。
     nodes = {
         1: SkeletonNode(id=1, pixels=[(0, 0)], position=(0.0, 0.0), role="junction"),
         2: SkeletonNode(id=2, pixels=[(0, 2)], position=(0.0, 2.0), role="junction"),
@@ -44,7 +46,8 @@ def test_merge_transitively_collapses_chain_of_junctions():
     merged = merge_close_junctions(graph, radius_px=3.0)
 
     assert len(merged.nodes) == 1
-    assert len(merged.edges) == 0
+    assert len(merged.edges) == 2
+    assert all(e.node_a == e.node_b for e in merged.edges.values())
 
 
 def test_merge_on_real_cross_shape_yields_single_junction_degree_four():

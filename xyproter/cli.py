@@ -26,6 +26,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cell-px", type=int, default=512, help="1文字あたりの正方形セルの一辺(px)")
     parser.add_argument("--columns", type=int, default=None, help="グリッドの列数（省略時は最長行の文字数）")
     parser.add_argument(
+        "--letter-spacing",
+        type=float,
+        default=1.0,
+        help="文字間隔の倍率(セル幅に対する列方向配置ピッチ)。既定1.0、1未満で文字間を詰める",
+    )
+    parser.add_argument(
         "--canvas-mm",
         type=float,
         nargs=2,
@@ -39,6 +45,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--merge-radius-px", type=float, default=None, help="交差点集約半径(px)。省略時は自動計算"
+    )
+    parser.add_argument(
+        "--simplify-tolerance-mm",
+        type=float,
+        default=None,
+        help="高速描画モード: 指定するとポリラインをこの許容誤差(mm)でDouglas-Peucker単純化し、"
+        "G-code行数を大幅に減らす。省略時(既定)は間引きなし(モード1)",
     )
     parser.add_argument("--pen-width-mm", type=float, default=0.5, help="プレビュー用ペン幅(mm)")
     parser.add_argument("--out-dir", type=Path, default=Path("output"), help="出力先ディレクトリ")
@@ -81,6 +94,8 @@ def main(argv: list[str] | None = None) -> None:
         spur_threshold_px=args.spur_threshold_px,
         merge_radius_px=args.merge_radius_px,
         columns=args.columns,
+        simplify_tolerance_mm=args.simplify_tolerance_mm,
+        letter_spacing_factor=args.letter_spacing,
     )
 
     glyph_results, job = run_text_pipeline(text, config)

@@ -29,6 +29,13 @@ def test_rasterize_grid_sets_cell_origin(jp_font_path):
     assert origins["ア"] == (256, 256)
 
 
+def test_rasterize_grid_letter_spacing_factor_shrinks_column_pitch(jp_font_path):
+    rasters = rasterize_grid(jp_font_path, "永語", 300.0, (256, 256), letter_spacing_factor=0.5)
+    origins = {r.char: r.cell_origin_px for r in rasters}
+    assert origins["永"] == (0, 0)
+    assert origins["語"] == (0, 128)  # 256px * 0.5
+
+
 def test_rasterize_ttc_font_index_selects_different_face():
     # meiryo.ttc は index0=Meiryo, index1=Meiryo UI のように複数フェイスを持つ
     from pathlib import Path

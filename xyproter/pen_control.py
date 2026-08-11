@@ -92,22 +92,42 @@ class RelativeZPenController:
     基準とみなし、絶対Z座標は一切使わない。内部で「今アップかダウンか」を
     追跡し、既に同じ状態なら何もしない（同じ方向へ二重に動いて基準からずれる
     事故を防ぐ）。
+
+    呼び出し側が送信のたびにG92 Z0でその時点の物理位置を再定義する運用の場合、
+    前回teardownでfinal_lift_mm分退避した高さが新しいZ=0になる。その状態で
+    通常のdown_travel_mmだけ下げても紙には届かない(final_lift_mm-down_travel_mm
+    分浮いたまま)ため、initial_extra_down_mmに前回のfinal_lift_mmを渡すことで、
+    最初のpen_down()だけその分を追加で下げ、基準のズレを補正する。
     """
 
-    def __init__(self, down_travel_mm: float = 3.0, z_feed: float = 200.0):
+    def __init__(
+        self,
+        down_travel_mm: float = 3.0,
+        z_feed: float = 200.0,
+        final_lift_mm: float = 0.0,
+        initial_extra_down_mm: float = 0.0,
+    ):
         self.down_travel_mm = down_travel_mm
         self.z_feed = z_feed
+        self.final_lift_mm = final_lift_mm  # 作業終了時、pen_upの位置からさらに退避させる追加上昇量(mm)
+        self.initial_extra_down_mm = initial_extra_down_mm  # 最初のpen_downだけ追加で下げる補正量(mm)
         self._is_down = False
+        self._first_down_done = False
 
     def setup(self) -> list[str]:
         self._is_down = False
+        self._first_down_done = False
         return ["G21", "G90"]
 
     def pen_down(self) -> list[str]:
         if self._is_down:
             return []
         self._is_down = True
-        return ["G91", f"G1 Z-{self.down_travel_mm:.3f} F{self.z_feed:.1f}", "G90"]
+        travel = self.down_travel_mm
+        if not self._first_down_done:
+            travel += self.initial_extra_down_mm
+            self._first_down_done = True
+        return ["G91", f"G1 Z-{travel:.3f} F{self.z_feed:.1f}", "G90"]
 
     def pen_up(self) -> list[str]:
         if not self._is_down:
@@ -116,7 +136,15 @@ class RelativeZPenController:
         return ["G91", f"G1 Z{self.down_travel_mm:.3f} F{self.z_feed:.1f}", "G90"]
 
     def teardown(self) -> list[str]:
-        return self.pen_up()
+        """通常のペンアップに加えて、作業終了時はfinal_lift_mm分さらに退避する。
+
+        pen_up()は「既にダウンでなければ何もしない」ため、既にアップ状態で
+        終わった場合でも確実に追加退避できるよう、teardownでは無条件に呼ぶ。
+        """
+        lines = self.pen_up()
+        if self.final_lift_mm > 0:
+            lines = lines + ["G91", f"G1 Z{self.final_lift_mm:.3f} F{self.z_feed:.1f}", "G90"]
+        return lines
 
 
 class CustomCommandPenController:

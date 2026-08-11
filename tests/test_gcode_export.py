@@ -35,6 +35,24 @@ def test_gcode_contains_all_polyline_points():
     assert "X5.000 Y15.000" in text
 
 
+def test_gcode_returns_to_xy_origin_after_teardown_by_default():
+    job = _small_job()
+    pen = CustomCommandPenController(
+        up_cmds=["PENUP"], down_cmds=["PENDOWN"], teardown_cmds=["TEARDOWN"]
+    )
+    lines = build_gcode_lines(job, pen=pen)
+    # 末尾は teardown -> 移動F指定 -> XY原点復帰、の順になるはず
+    assert lines[-3] == "TEARDOWN"
+    assert lines[-1] == "G0 X0.000 Y0.000"
+
+
+def test_gcode_return_to_origin_can_be_disabled():
+    job = _small_job()
+    lines = build_gcode_lines(job, pen=ZAxisPenController(), return_to_origin=False)
+    # このジョブ自体が(0,0)始点を含むため文字列の非存在では判定できず、末尾だけを見る
+    assert lines[-1] != "G0 X0.000 Y0.000"
+
+
 def test_gcode_is_placeholder_swappable_via_pen_controller():
     job = _small_job()
     custom = CustomCommandPenController(up_cmds=["CUSTOM_UP"], down_cmds=["CUSTOM_DOWN"])
@@ -45,11 +63,12 @@ def test_gcode_is_placeholder_swappable_via_pen_controller():
 
 
 def test_outline_check_gcode_has_no_z_commands():
+    # 原点(0,0)=文章の左上、矩形はX+(右)・Y-(下)方向へ展開する
     lines = build_outline_check_gcode(30.0, 40.0, feed_rate=100.0)
     assert not any("Z" in line for line in lines)
     assert "G1 X0.000 Y0.000" in lines
     assert "G1 X30.000 Y0.000" in lines
-    assert "G1 X30.000 Y40.000" in lines
-    assert "G1 X0.000 Y40.000" in lines
+    assert "G1 X30.000 Y-40.000" in lines
+    assert "G1 X0.000 Y-40.000" in lines
     # 最初に(0,0)へ移動し、最後にも(0,0)に戻って矩形を閉じる
     assert lines.count("G1 X0.000 Y0.000") == 2
