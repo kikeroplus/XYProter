@@ -352,6 +352,7 @@ class GrblControlApp:
         # -- 実行ボタン --
         action_row = ttk.Frame(draw_frame)
         action_row.grid(row=4, column=0, sticky="ew", padx=6, pady=6)
+        ttk.Button(action_row, text="自動改行", command=self._on_auto_wrap).pack(side="left", padx=(0, 4))
         ttk.Button(action_row, text="外周確認", command=self._on_outline_check).pack(side="left", padx=(0, 4))
         ttk.Button(action_row, text="シミュレーション", command=self._on_simulate).pack(side="left", padx=4)
         send_border = tk.Frame(action_row, bg="blue")
@@ -580,6 +581,19 @@ class GrblControlApp:
             return 1.0
         return line_spacing_mm / size_mm
 
+    @staticmethod
+    def _max_count(limit_mm: float, size_mm: float, factor: float) -> float:
+        """`canvas_mm = size_mm * ((n-1)*factor + 1) <= limit_mm` を満たす最大のnを返す。
+
+        `_update_draw_guide`(赤線ガイド)と`_on_auto_wrap`(自動改行)の両方で、
+        「範囲(mm)に収まる最大文字数」を同じ式から求めるために共通化している。
+        """
+        if size_mm <= 0:
+            return 0.0
+        if factor <= 0:
+            return max(limit_mm / size_mm, 0.0)
+        return max((limit_mm / size_mm - 1.0) / factor + 1.0, 0.0)
+
     def _get_text_and_canvas(
         self, size_mm: float, letter_spacing_factor: float = 1.0, line_spacing_factor: float = 1.0
     ) -> tuple[str, float, float]:
@@ -598,6 +612,49 @@ class GrblControlApp:
         canvas_w_mm = size_mm * (max(n_cols - 1, 0) * letter_spacing_factor + 1)
         canvas_h_mm = size_mm * (max(n_rows - 1, 0) * line_spacing_factor + 1)
         return text, canvas_w_mm, canvas_h_mm
+
+    # ---------- 自動改行 ----------
+    def _on_auto_wrap(self) -> None:
+        """現在の範囲設定(横方向・最大X)をもとに、入力文字列へ自動で改行を挿入する。
+
+        ユーザーが手動で入力した改行(段落区切り)はそのまま尊重し、各行を
+        独立に折り返す。1行に収まる最大文字数は赤線ガイドと同じ`_max_count`の式
+        (canvas_w_mm <= max_x を満たす最大文字数)で求める。固定ピッチのグリッド
+        配置(`rasterize_grid`)に合わせ、文字幅は字種によらず一律1文字=1列として扱う。
+        """
+        try:
+            max_x = float(self.max_x_var.get())
+            size_mm = float(self.size_var.get())
+            letter_spacing_factor = float(self.letter_spacing_var.get())
+        except (ValueError, tk.TclError):
+            messagebox.showerror("エラー", "範囲(最大X)/文字サイズ/文字間隔を確認してください")
+            return
+        if size_mm <= 0:
+            messagebox.showerror("エラー", "文字サイズを確認してください")
+            return
+
+        max_cols = int(self._max_count(max_x, size_mm, letter_spacing_factor))
+        if max_cols < 1:
+            messagebox.showerror("エラー", "現在の範囲設定では1文字も描画範囲に収まりません")
+            return
+
+        text = self.text_widget.get("1.0", "end-1c")
+        wrapped_lines: list[str] = []
+        for line in text.split("\n"):
+            if len(line) <= max_cols:
+                wrapped_lines.append(line)
+                continue
+            for i in range(0, len(line), max_cols):
+                wrapped_lines.append(line[i : i + max_cols])
+        wrapped_text = "\n".join(wrapped_lines)
+
+        if wrapped_text == text:
+            self.job_status_var.set("自動改行: 変更はありませんでした(すでに範囲内です)")
+            return
+
+        self.text_widget.delete("1.0", "end")
+        self.text_widget.insert("1.0", wrapped_text)
+        self.job_status_var.set(f"自動改行しました(横約{max_cols}文字ごと)")
 
     # ---------- 描画範囲ガイド(赤線) ----------
     def _on_text_modified(self, event: tk.Event) -> None:
@@ -623,14 +680,8 @@ class GrblControlApp:
             return
         line_spacing_factor = self._line_spacing_factor(size_mm, line_spacing_mm)
 
-        def _max_count(limit_mm: float, factor: float) -> float:
-            # canvas_mm = size_mm * ((n-1)*factor + 1) <= limit_mm を n について解く
-            if factor <= 0:
-                return max(limit_mm / size_mm, 0.0)
-            return max((limit_mm / size_mm - 1.0) / factor + 1.0, 0.0)
-
-        max_cols = _max_count(max_x, letter_spacing_factor)
-        max_rows = _max_count(max_y, line_spacing_factor)
+        max_cols = self._max_count(max_x, size_mm, letter_spacing_factor)
+        max_rows = self._max_count(max_y, size_mm, line_spacing_factor)
 
         # 赤線のピクセル位置は近似(下記コメント参照)なので、近似誤差のない
         # 厳密値(何文字目・何行目まで収まるか)をラベルに数値でも表示する。
