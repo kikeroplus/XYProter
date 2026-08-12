@@ -42,6 +42,7 @@ class PipelineConfig:
     columns: int | None = None
     simplify_tolerance_mm: float | None = None  # モード1(既定)=None=間引きなし。値を指定すると高速モード
     letter_spacing_factor: float = 1.0  # セル幅に対する列方向配置ピッチの倍率。既定1.0、<1で文字間を詰める
+    line_spacing_factor: float = 1.0  # セル高さに対する行方向配置ピッチの倍率。既定1.0、文字サイズと独立に行間を調整できる
 
 
 @dataclass
@@ -143,6 +144,7 @@ def run_text_pipeline(text: str, config: PipelineConfig) -> tuple[list[GlyphPipe
         font_index=config.font_index,
         threshold=config.threshold,
         letter_spacing_factor=config.letter_spacing_factor,
+        line_spacing_factor=config.line_spacing_factor,
     )
     glyph_results = [process_glyph(r, config) for r in rasters]
     job = build_plot_job(glyph_results, config)

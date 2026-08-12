@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -24,8 +26,15 @@ from .gcode_export import build_gcode_lines, build_outline_check_gcode
 from .grbl_sender import GrblConnection, GrblError, check_xy_bounds, parse_status
 from .pen_control import RelativeZPenController
 from .pipeline import PipelineConfig, run_text_pipeline
+from .types import PlotJob
 
-SETTINGS_PATH = Path(__file__).resolve().parent.parent / "xyproter_gui_settings.json"
+# PyInstaller(onefile)実行時は__file__が実行のたびに変わる一時展開ディレクトリを
+# 指すため、そこに設定を保存すると終了時に失われる。exe本体のディレクトリを使う。
+if getattr(sys, "frozen", False):
+    _BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    _BASE_DIR = Path(__file__).resolve().parent.parent
+SETTINGS_PATH = _BASE_DIR / "xyproter_gui_settings.json"
 
 STEP_OPTIONS = [0.01, 0.1, 1, 10, 100]
 FEED_OPTIONS = [10, 50, 100, 500, 1000, 2000, 5000]
@@ -45,6 +54,7 @@ DEFAULT_SETTINGS = {
     "step_mm": 1.0,
     "feed": 500.0,
     "size_mm": 30.0,
+    "line_spacing_mm": 30.0,
     "z_down_mm": 3.0,
     "z_feed": 200.0,
     "final_lift_mm": 15.0,
@@ -102,6 +112,7 @@ class GrblControlApp:
                     "step_mm": float(self.step_var.get()),
                     "feed": float(self.feed_var.get()),
                     "size_mm": float(self.size_var.get()),
+                    "line_spacing_mm": float(self.line_spacing_var.get()),
                     "z_down_mm": float(self.zdown_var.get()),
                     "z_feed": float(self.z_feed_var.get()),
                     "final_lift_mm": float(self.final_lift_var.get()),
@@ -144,8 +155,14 @@ class GrblControlApp:
         self.baud_var = tk.StringVar(value=str(s["baud"]))
         ttk.Entry(conn_frame, textvariable=self.baud_var, width=8).grid(row=0, column=3, padx=4)
 
-        self.connect_btn = ttk.Button(conn_frame, text="接続", command=self._toggle_connect)
-        self.connect_btn.grid(row=0, column=4, padx=4)
+        # 接続状態がひと目でわかるよう縁取り色を切り替える。ttk.Buttonは
+        # highlightbackground等のTk標準の縁取りオプションをWindowsの既定
+        # テーマ(vista)では描画しないため、色付きのtk.Frameで包んで隙間
+        # (padx/pady)を縁取りに見せる方式にしている。
+        self.connect_border = tk.Frame(conn_frame, bg="red")
+        self.connect_border.grid(row=0, column=4, padx=4)
+        self.connect_btn = ttk.Button(self.connect_border, text="接続", command=self._toggle_connect)
+        self.connect_btn.pack(padx=2, pady=2)
 
         self.conn_status_var = tk.StringVar(value="未接続")
         ttk.Label(conn_frame, textvariable=self.conn_status_var).grid(row=0, column=5, padx=8)
@@ -164,10 +181,16 @@ class GrblControlApp:
         # ---- ゼロ点設定 ----
         zero_frame = ttk.LabelFrame(self.root, text="ゼロ点設定")
         zero_frame.grid(row=2, column=0, sticky="nsew", padx=6, pady=4)
-        ttk.Button(zero_frame, text="X=0", command=lambda: self._on_zero("X")).grid(row=0, column=0, padx=4, pady=4)
-        ttk.Button(zero_frame, text="Y=0", command=lambda: self._on_zero("Y")).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(zero_frame, text="Z=0", command=lambda: self._on_zero("Z")).grid(row=0, column=2, padx=4, pady=4)
-        ttk.Button(zero_frame, text="XYZ=0", command=lambda: self._on_zero("XYZ")).grid(row=0, column=3, padx=4, pady=4)
+
+        def _zero_button(text: str, axes: str, column: int) -> None:
+            border = tk.Frame(zero_frame, bg="#87CEFA")
+            border.grid(row=0, column=column, padx=4, pady=4)
+            ttk.Button(border, text=text, command=lambda: self._on_zero(axes)).pack(padx=2, pady=2)
+
+        _zero_button("X=0", "X", 0)
+        _zero_button("Y=0", "Y", 1)
+        _zero_button("Z=0", "Z", 2)
+        _zero_button("XYZ=0", "XYZ", 3)
 
         # ---- 範囲設定 ----
         range_frame = ttk.LabelFrame(self.root, text="範囲設定 (mm)")
@@ -235,11 +258,31 @@ class GrblControlApp:
         ttk.Button(font_row, text="参照", command=self._browse_font).pack(side="left")
 
         # -- 文字列入力(主役なので横長・大きめのフォントで目立たせる) --
-        ttk.Label(draw_frame, text="文字列 (Enterで改行)").grid(
+        # 赤線は「文字数×文字入力欄の平均文字幅」で位置を近似しているため、
+        # 列数・行数が多い設定(小さい文字÷広い範囲)では欄の表示幅を超えて
+        # クランプされ、線だけでは正確な目安にならない。そのため正確な列数・
+        # 行数を数値でも併記する(こちらは近似なしの厳密値)。
+        self.guide_label_var = tk.StringVar(value="文字列 (Enterで改行)")
+        ttk.Label(draw_frame, textvariable=self.guide_label_var).grid(
             row=1, column=0, sticky="w", padx=6, pady=(6, 0)
         )
         self.text_widget = tk.Text(draw_frame, width=64, height=6, wrap="none", font=("", 13))
         self.text_widget.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
+        self._text_font = tkfont.Font(font=self.text_widget.cget("font"))
+        # 範囲設定(max_x/max_y)・文字サイズ・文字間隔・行間から、これ以上入力すると
+        # 描画範囲をはみ出す境目を赤線でText上にオーバーレイ表示するガイド
+        # ([[project-xyproter-pipeline]]の座標系: 原点=1文字目左上、X+右・Y-下)。
+        # place(in_=text_widget)でテキストウィジェットの上に重ねて描画する。
+        self._guide_v = tk.Frame(draw_frame, bg="red")
+        self._guide_h = tk.Frame(draw_frame, bg="red")
+        self.text_widget.bind("<Configure>", self._update_draw_guide)
+        # ガイドの列位置は実際に入力されている文字のTk実測位置(bbox)を優先して
+        # 使う([[_update_draw_guide]])ため、範囲設定などを一切変えずに文字を
+        # 入力/削除しただけでもガイドの再計算が必要。<<Modified>>は入力・削除・
+        # 貼り付け・元に戻す等どの経路でも発火するTk標準の変更通知イベント。
+        # 発火後にedit_modified(False)でフラグをリセットしないと以降二度と
+        # 発火しなくなる仕様のため、ここで毎回リセットしている。
+        self.text_widget.bind("<<Modified>>", self._on_text_modified)
 
         # -- 設定(カテゴリ別サブフレームを横並びに) --
         settings_row = ttk.Frame(draw_frame)
@@ -252,7 +295,16 @@ class GrblControlApp:
         ttk.Combobox(
             char_frame, textvariable=self.size_var, values=SIZE_OPTIONS, width=6, state="readonly"
         ).grid(row=0, column=1, padx=4, pady=2)
-        ttk.Label(char_frame, text="文字間隔").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(char_frame, text="行間(mm)").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        # 文字サイズ(セル寸法)とは独立に行方向のピッチをmmで直接指定する。既定は
+        # サイズ(mm)と同値(=従来どおり行間と文字サイズが一致)だが、値を変えれば
+        # 小さい文字を広い罫線幅に合わせて配置したり、逆に大きい文字を狭い行間で
+        # 重ねて配置することもできる(重なりの禁止制御はあえて省略している)。
+        self.line_spacing_var = tk.StringVar(value=str(s["line_spacing_mm"]))
+        ttk.Entry(char_frame, textvariable=self.line_spacing_var, width=6).grid(
+            row=1, column=1, padx=4, pady=2
+        )
+        ttk.Label(char_frame, text="文字間隔").grid(row=2, column=0, sticky="w", padx=4, pady=2)
         self.letter_spacing_var = tk.StringVar(value=str(s["letter_spacing_factor"]))
         ttk.Combobox(
             char_frame,
@@ -260,14 +312,14 @@ class GrblControlApp:
             values=LETTER_SPACING_OPTIONS,
             width=6,
             state="readonly",
-        ).grid(row=1, column=1, padx=4, pady=2)
+        ).grid(row=2, column=1, padx=4, pady=2)
         self.fast_mode_var = tk.BooleanVar(value=bool(s["fast_mode"]))
         ttk.Checkbutton(char_frame, text="高速モード", variable=self.fast_mode_var).grid(
-            row=2, column=0, sticky="w", padx=4, pady=2
+            row=3, column=0, sticky="w", padx=4, pady=2
         )
         self.simplify_tolerance_var = tk.StringVar(value=str(s["simplify_tolerance_mm"]))
         ttk.Entry(char_frame, textvariable=self.simplify_tolerance_var, width=6).grid(
-            row=2, column=1, padx=4, pady=2
+            row=3, column=1, padx=4, pady=2
         )
 
         speed_frame2 = ttk.LabelFrame(settings_row, text="送り速度(mm/min)")
@@ -301,8 +353,11 @@ class GrblControlApp:
         action_row = ttk.Frame(draw_frame)
         action_row.grid(row=4, column=0, sticky="ew", padx=6, pady=6)
         ttk.Button(action_row, text="外周確認", command=self._on_outline_check).pack(side="left", padx=(0, 4))
-        self.send_btn = ttk.Button(action_row, text="送信", command=self._on_send_text)
-        self.send_btn.pack(side="left", padx=4)
+        ttk.Button(action_row, text="シミュレーション", command=self._on_simulate).pack(side="left", padx=4)
+        send_border = tk.Frame(action_row, bg="blue")
+        send_border.pack(side="left", padx=4)
+        self.send_btn = ttk.Button(send_border, text="送信", command=self._on_send_text)
+        self.send_btn.pack(padx=2, pady=2)
         self.cancel_btn = ttk.Button(
             action_row, text="キャンセル", command=self._on_cancel_send, state="disabled"
         )
@@ -312,6 +367,12 @@ class GrblControlApp:
         ttk.Label(draw_frame, textvariable=self.job_status_var, foreground="blue", wraplength=560).grid(
             row=5, column=0, sticky="w", padx=6, pady=(0, 6)
         )
+
+        # 描画範囲ガイド(赤線)は範囲設定・文字サイズ・文字間隔・行間の変更に
+        # 追従して再計算する。全StringVar構築後にまとめてtraceを張る。
+        for var in (self.max_x_var, self.max_y_var, self.size_var, self.letter_spacing_var, self.line_spacing_var):
+            var.trace_add("write", self._update_draw_guide)
+        self.root.after(100, self._update_draw_guide)
 
     # ---------- ポート ----------
     def _list_ports(self) -> list[str]:
@@ -334,6 +395,7 @@ class GrblControlApp:
             self.conn = None
             self.conn_status_var.set("未接続")
             self.connect_btn.config(text="接続")
+            self.connect_border.config(bg="red")
             return
 
         port = self.port_var.get().strip()
@@ -348,6 +410,7 @@ class GrblControlApp:
             self._last_final_lift_mm = 0.0  # 新規接続では物理的な基準が不明なのでリセット
             self.conn_status_var.set(f"接続済み: {port}")
             self.connect_btn.config(text="切断")
+            self.connect_border.config(bg="green")
             self._refresh_status()
         except Exception as e:
             messagebox.showerror("接続エラー", str(e))
@@ -506,22 +569,120 @@ class GrblControlApp:
             self.font_var.set(path)
 
     # ---------- 文字送信 ----------
-    def _get_text_and_canvas(self, size_mm: float, letter_spacing_factor: float = 1.0) -> tuple[str, float, float]:
+    @staticmethod
+    def _line_spacing_factor(size_mm: float, line_spacing_mm: float) -> float:
+        """行間(mm)を文字サイズ(mm)に対する倍率(pipeline.line_spacing_factor)に変換する。
+
+        行間を文字サイズと独立に指定できるようにするための変換。factor=1.0が
+        従来どおり「行間=文字サイズ」の状態に対応する。
+        """
+        if size_mm <= 0:
+            return 1.0
+        return line_spacing_mm / size_mm
+
+    def _get_text_and_canvas(
+        self, size_mm: float, letter_spacing_factor: float = 1.0, line_spacing_factor: float = 1.0
+    ) -> tuple[str, float, float]:
         """Textウィジェットから文字列を取得し、行数・列数から外周確認用のキャンバスサイズ(mm)を概算する。
 
         実際の描画時のY方向サイズは`pipeline.build_plot_job`が実際の行数から
         逆算するため、ここで計算するcanvas_h_mmは描画結果そのものには影響しない
         (外周確認や送信前確認ダイアログなど、パイプライン実行前の概算表示にのみ使う)。
-        canvas_w_mmは列方向の配置ピッチ(letter_spacing_factor倍)で(n_cols-1)個の
-        間隔＋最後の1文字分として計算し、`pipeline.rasterize_grid`の配置と一致させる。
+        canvas_w_mm/canvas_h_mmは配置ピッチ(letter_spacing_factor/line_spacing_factor倍)で
+        (n-1)個の間隔＋最後の1文字分として計算し、`pipeline.rasterize_grid`の配置と一致させる。
         """
         text = self.text_widget.get("1.0", "end-1c")
         lines = text.split("\n")
         n_cols = max((len(line) for line in lines), default=1)
         n_rows = len(lines)
         canvas_w_mm = size_mm * (max(n_cols - 1, 0) * letter_spacing_factor + 1)
-        canvas_h_mm = size_mm * n_rows
+        canvas_h_mm = size_mm * (max(n_rows - 1, 0) * line_spacing_factor + 1)
         return text, canvas_w_mm, canvas_h_mm
+
+    # ---------- 描画範囲ガイド(赤線) ----------
+    def _on_text_modified(self, event: tk.Event) -> None:
+        self.text_widget.edit_modified(False)
+        self._update_draw_guide()
+
+    def _update_draw_guide(self, *_args) -> None:
+        """文字入力欄に、現在の範囲設定(max_x/max_y)・文字サイズ・文字間隔・行間から
+        算出した「これ以上入力すると描画範囲をはみ出す」境目を赤線で重ね描きする。
+
+        あくまで目安表示であり、実際の描画幅は文字の字形(グリフのアドバンス幅は
+        セル幅と厳密には一致しない)によって多少前後する。入力を妨げる禁止制御は行わない。
+        """
+        try:
+            max_x = float(self.max_x_var.get())
+            max_y = float(self.max_y_var.get())
+            size_mm = float(self.size_var.get())
+            letter_spacing_factor = float(self.letter_spacing_var.get())
+            line_spacing_mm = float(self.line_spacing_var.get())
+        except (ValueError, tk.TclError):
+            return
+        if size_mm <= 0:
+            return
+        line_spacing_factor = self._line_spacing_factor(size_mm, line_spacing_mm)
+
+        def _max_count(limit_mm: float, factor: float) -> float:
+            # canvas_mm = size_mm * ((n-1)*factor + 1) <= limit_mm を n について解く
+            if factor <= 0:
+                return max(limit_mm / size_mm, 0.0)
+            return max((limit_mm / size_mm - 1.0) / factor + 1.0, 0.0)
+
+        max_cols = _max_count(max_x, letter_spacing_factor)
+        max_rows = _max_count(max_y, line_spacing_factor)
+
+        # 赤線のピクセル位置は近似(下記コメント参照)なので、近似誤差のない
+        # 厳密値(何文字目・何行目まで収まるか)をラベルに数値でも表示する。
+        # 文字入力欄が狭い(=小さい文字÷広い範囲で列数・行数が多い)場合、
+        # 赤線だけでは欄の右端/下端に張り付いてしまい目安にならないため。
+        self.guide_label_var.set(
+            f"文字列 (Enterで改行) ／ 目安: 横約{int(max_cols)}文字・縦約{int(max_rows)}行まで"
+            "(赤線=欄内に収まる範囲のみの近似表示)"
+        )
+
+        widget_w = self.text_widget.winfo_width()
+        widget_h = self.text_widget.winfo_height()
+        if widget_w <= 1 or widget_h <= 1:
+            # ウィジェットがまだレイアウト確定前の可能性があるので少し待って再試行する
+            self.root.after(50, self._update_draw_guide)
+            return
+
+        # 列方向は文字ごとに実際の描画幅が違う(全角/半角混在、字種による差。
+        # 実測例: meiryo 13ptで平仮名混じりの平均は約15.4px/文字だが「国」単体
+        # は17px と字種だけでも1割以上ズレる)ため、固定の文字幅定数では
+        # ズレが蓄積して境界文字数が数文字分ズレてしまう。実際に入力されている
+        # 文字があれば、その位置をTkの実測(bbox)でそのまま使うことで誤差を
+        # なくす。入力がその文字数に届いていない場合のみ、平均的な全角文字幅
+        # (代表として「国」を計測)で近似する。行方向は同一フォントで行高が
+        # 一定なため、この誤差は生じない。
+        lines_text = self.text_widget.get("1.0", "end-1c").split("\n")
+        char_w = max(self._text_font.measure("国"), 1)
+        line_h = max(self._text_font.metrics("linespace"), 1)
+
+        col_idx = int(max_cols)
+        guide_x = max_cols * char_w
+        for row_i, line in enumerate(lines_text, start=1):
+            if len(line) >= col_idx:
+                bbox = self.text_widget.bbox(f"{row_i}.{col_idx}")
+                if bbox:
+                    guide_x = float(bbox[0])
+                break
+
+        row_idx = int(max_rows) + 1
+        guide_y = max_rows * line_h
+        if len(lines_text) >= row_idx:
+            bbox = self.text_widget.bbox(f"{row_idx}.0")
+            if bbox:
+                guide_y = float(bbox[1])
+
+        guide_x = min(guide_x, widget_w)
+        guide_y = min(guide_y, widget_h)
+
+        self._guide_v.place(in_=self.text_widget, x=guide_x, y=0, width=2, height=widget_h)
+        self._guide_h.place(in_=self.text_widget, x=0, y=guide_y, width=widget_w, height=2)
+        self._guide_v.lift()
+        self._guide_h.lift()
 
     def _on_outline_check(self) -> None:
         """描画範囲の外周だけをペンアップのまま低速でなぞり、実際にX+(右)・
@@ -535,11 +696,15 @@ class GrblControlApp:
         try:
             size_mm = float(self.size_var.get())
             letter_spacing_factor = float(self.letter_spacing_var.get())
+            line_spacing_mm = float(self.line_spacing_var.get())
         except ValueError:
-            messagebox.showerror("エラー", "文字サイズ/文字間隔を確認してください")
+            messagebox.showerror("エラー", "文字サイズ/文字間隔/行間を確認してください")
             return
+        line_spacing_factor = self._line_spacing_factor(size_mm, line_spacing_mm)
 
-        _, canvas_w_mm, canvas_h_mm = self._get_text_and_canvas(size_mm, letter_spacing_factor)
+        _, canvas_w_mm, canvas_h_mm = self._get_text_and_canvas(
+            size_mm, letter_spacing_factor, line_spacing_factor
+        )
 
         if not messagebox.askyesno(
             "外周確認",
@@ -589,11 +754,15 @@ class GrblControlApp:
             travel_feed = float(self.travel_feed_var.get())
             simplify_tolerance_mm = float(self.simplify_tolerance_var.get())
             letter_spacing_factor = float(self.letter_spacing_var.get())
+            line_spacing_mm = float(self.line_spacing_var.get())
         except ValueError:
             messagebox.showerror("エラー", "数値項目を確認してください")
             return
+        line_spacing_factor = self._line_spacing_factor(size_mm, line_spacing_mm)
 
-        text, canvas_w_mm, canvas_h_mm = self._get_text_and_canvas(size_mm, letter_spacing_factor)
+        text, canvas_w_mm, canvas_h_mm = self._get_text_and_canvas(
+            size_mm, letter_spacing_factor, line_spacing_factor
+        )
         if not text:
             messagebox.showerror("エラー", "文字列を入力してください")
             return
@@ -605,6 +774,7 @@ class GrblControlApp:
             canvas_size_mm=(canvas_w_mm, canvas_h_mm),
             simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
             letter_spacing_factor=letter_spacing_factor,
+            line_spacing_factor=line_spacing_factor,
         )
         try:
             self.job_status_var.set("G-code生成中...")
@@ -713,6 +883,100 @@ class GrblControlApp:
             except Exception:
                 pass
         self.job_status_var.set("キャンセル要求を送信しました(フィードホールド中)...")
+
+    # ---------- シミュレーション ----------
+    def _on_simulate(self) -> None:
+        """実機に送信せず、実際のフォントで生成したストロークを画面上でプレビューする。
+
+        「送信」と同じパイプライン(run_text_pipeline)を通すため、実際に送信した
+        場合とほぼ同じ形・範囲が事前に確認できる(接続不要)。
+        """
+        try:
+            size_mm = float(self.size_var.get())
+            letter_spacing_factor = float(self.letter_spacing_var.get())
+            line_spacing_mm = float(self.line_spacing_var.get())
+            max_x = float(self.max_x_var.get())
+            max_y = float(self.max_y_var.get())
+            simplify_tolerance_mm = float(self.simplify_tolerance_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "数値項目を確認してください")
+            return
+        line_spacing_factor = self._line_spacing_factor(size_mm, line_spacing_mm)
+
+        text, canvas_w_mm, canvas_h_mm = self._get_text_and_canvas(
+            size_mm, letter_spacing_factor, line_spacing_factor
+        )
+        if not text:
+            messagebox.showerror("エラー", "文字列を入力してください")
+            return
+
+        config = PipelineConfig(
+            font_path=Path(self.font_var.get()),
+            font_size_pt=280.0,
+            cell_px=(400, 400),
+            canvas_size_mm=(canvas_w_mm, canvas_h_mm),
+            simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
+            letter_spacing_factor=letter_spacing_factor,
+            line_spacing_factor=line_spacing_factor,
+        )
+        self.job_status_var.set("シミュレーション生成中...")
+        self.root.update_idletasks()
+        try:
+            _, job = run_text_pipeline(text, config)
+        except Exception as e:
+            messagebox.showerror("生成エラー", str(e))
+            self.job_status_var.set("")
+            return
+        self.job_status_var.set("")
+        self._show_simulation_window(job, max_x, max_y)
+
+    def _show_simulation_window(self, job: PlotJob, max_x: float, max_y: float) -> None:
+        """描画範囲(赤枠)と実際の文字ストローク(黒線)を重ねて表示するプレビュー窓。
+
+        mm座標系は本体の描画と同じ(原点=1文字目左上、X+右、Y-下)。赤枠は
+        「範囲設定」で指定した可動範囲、黒線が実際に送信されるストローク。
+        """
+        top = tk.Toplevel(self.root)
+        top.title("シミュレーション表示")
+
+        canvas_w_px, canvas_h_px = 700, 700
+        canvas = tk.Canvas(top, width=canvas_w_px, height=canvas_h_px, bg="white")
+        canvas.pack(padx=8, pady=8)
+
+        range_w_mm = max(max_x, job.canvas_size_mm[0], 1.0)
+        range_h_mm = max(max_y, job.canvas_size_mm[1], 1.0)
+        margin_px = 20
+        scale = min(
+            (canvas_w_px - 2 * margin_px) / range_w_mm,
+            (canvas_h_px - 2 * margin_px) / range_h_mm,
+        )
+
+        def to_canvas(x_mm: float, y_mm: float) -> tuple[float, float]:
+            return margin_px + x_mm * scale, margin_px + (-y_mm) * scale
+
+        rx0, ry0 = to_canvas(0.0, 0.0)
+        rx1, ry1 = to_canvas(max_x, -max_y)
+        canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="red", width=2)
+
+        for poly in job.polylines:
+            pts = poly.points
+            if len(pts) < 2:
+                continue
+            coords: list[float] = []
+            for px, py in pts:
+                cx, cy = to_canvas(float(px), float(py))
+                coords.extend([cx, cy])
+            canvas.create_line(*coords, fill="black", width=1.2)
+
+        ttk.Label(
+            top,
+            text=(
+                f"赤枠 = 現在の範囲設定 X:0〜{max_x:.1f}mm Y:0〜-{max_y:.1f}mm\n"
+                f"文字の実描画範囲: X:0〜{job.canvas_size_mm[0]:.1f}mm "
+                f"Y:0〜-{job.canvas_size_mm[1]:.1f}mm\n{job.stats.summary()}"
+            ),
+            justify="left",
+        ).pack(padx=8, pady=(0, 8), anchor="w")
 
 
 def main() -> None:

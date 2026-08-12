@@ -9,3 +9,8 @@ venv/
 # 実行時に生成される出力物・ローカル設定（機体固有・再生成可能なため追跡しない）
 output/
 xyproter_gui_settings.json
+
+# PyInstaller ビルド成果物
+build/
+dist/
+*.spec
