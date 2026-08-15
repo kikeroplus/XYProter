@@ -39,9 +39,10 @@ SETTINGS_PATH = _BASE_DIR / "xyproter_gui_settings.json"
 STEP_OPTIONS = [0.01, 0.1, 1, 10, 100]
 FEED_OPTIONS = [10, 50, 100, 500, 1000, 2000, 5000]
 SIZE_OPTIONS = [5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 40, 50, 80, 100]
-Z_FEED_OPTIONS = [200, 400, 600, 800, 1000]
-# $110/$111(X/Y最大送り速度)=800mm/minが機体の上限のため、それ以下の現実的な値のみを選択肢にする
-XY_FEED_OPTIONS = [100, 200, 300, 400, 600, 800]
+# $112(Z最大送り速度)=1000mm/minが機体の上限のため、それ以下の現実的な値のみを選択肢にする
+Z_FEED_OPTIONS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+# $110/$111(X/Y最大送り速度)=3000mm/min(ベルトドライブ化後)が機体の上限のため、それ以下の現実的な値のみを選択肢にする
+XY_FEED_OPTIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 2500, 3000]
 LETTER_SPACING_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 DEFAULT_SETTINGS = {
@@ -327,17 +328,17 @@ class GrblControlApp:
         ttk.Label(speed_frame2, text="描画").grid(row=0, column=0, sticky="w", padx=4, pady=2)
         self.draw_feed_var = tk.StringVar(value=str(s["draw_feed"]))
         ttk.Combobox(
-            speed_frame2, textvariable=self.draw_feed_var, values=XY_FEED_OPTIONS, width=6, state="readonly"
+            speed_frame2, textvariable=self.draw_feed_var, values=XY_FEED_OPTIONS, width=6
         ).grid(row=0, column=1, padx=4, pady=2)
         ttk.Label(speed_frame2, text="移動").grid(row=1, column=0, sticky="w", padx=4, pady=2)
         self.travel_feed_var = tk.StringVar(value=str(s["travel_feed"]))
         ttk.Combobox(
-            speed_frame2, textvariable=self.travel_feed_var, values=XY_FEED_OPTIONS, width=6, state="readonly"
+            speed_frame2, textvariable=self.travel_feed_var, values=XY_FEED_OPTIONS, width=6
         ).grid(row=1, column=1, padx=4, pady=2)
         ttk.Label(speed_frame2, text="Z").grid(row=2, column=0, sticky="w", padx=4, pady=2)
         self.z_feed_var = tk.StringVar(value=str(s["z_feed"]))
         ttk.Combobox(
-            speed_frame2, textvariable=self.z_feed_var, values=Z_FEED_OPTIONS, width=6, state="readonly"
+            speed_frame2, textvariable=self.z_feed_var, values=Z_FEED_OPTIONS, width=6
         ).grid(row=2, column=1, padx=4, pady=2)
 
         pen_frame = ttk.LabelFrame(settings_row, text="ペン制御(mm)")
