@@ -267,7 +267,16 @@ class GrblControlApp:
         ttk.Label(draw_frame, textvariable=self.guide_label_var).grid(
             row=1, column=0, sticky="w", padx=6, pady=(6, 0)
         )
-        self.text_widget = tk.Text(draw_frame, width=64, height=6, wrap="none", font=("", 13))
+        self.text_widget = tk.Text(
+            draw_frame,
+            width=64,
+            height=6,
+            wrap="none",
+            font=("", 13),
+            undo=True,
+            autoseparators=True,
+            maxundo=-1,
+        )
         self.text_widget.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
         self._text_font = tkfont.Font(font=self.text_widget.cget("font"))
         # 範囲設定(max_x/max_y)・文字サイズ・文字間隔・行間から、これ以上入力すると
