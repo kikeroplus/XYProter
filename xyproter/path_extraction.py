@@ -66,21 +66,63 @@ def _oriented_points(graph: SkeletonGraph, edge: SkeletonEdge, cur: int) -> tupl
     return pts, end_node
 
 
+def _direction(pts: np.ndarray, at_start: bool, n: int = 4) -> np.ndarray | None:
+    """エッジの端点近傍から進行方向の単位ベクトルを求める（交点でのブレを避けるため数画素分を見る）。"""
+    span = min(n, len(pts) - 1)
+    if span < 1:
+        return None
+    seg = pts[: span + 1] if at_start else pts[-(span + 1) :]
+    vec = seg[-1] - seg[0]
+    norm = float(np.hypot(*vec))
+    if norm < 1e-9:
+        return None
+    return vec / norm
+
+
+def _choose_next_edge(
+    graph: SkeletonGraph,
+    candidates: list[SkeletonEdge],
+    cur: int,
+    prev_dir: np.ndarray | None,
+) -> SkeletonEdge:
+    """交点では、直前の進行方向に最も近く延びるエッジを優先し、直線性を保つ。
+
+    速度（ペンアップ移動の少なさ）よりも、文字として自然な直線を優先するための選択。
+    先行方向が無い（トレイル起点）場合は候補の先頭を使う。
+    """
+    if prev_dir is None or len(candidates) == 1:
+        return candidates[0]
+    best_edge = candidates[0]
+    best_score = -math.inf
+    for e in candidates:
+        pts, _ = _oriented_points(graph, e, cur)
+        out_dir = _direction(pts, at_start=True)
+        if out_dir is None:
+            continue
+        score = float(np.dot(prev_dir, out_dir))
+        if score > best_score:
+            best_score = score
+            best_edge = e
+    return best_edge
+
+
 def _walk_trail(
     graph: SkeletonGraph, comp_edges: list[SkeletonEdge], used_edges: set[int], start: int
 ) -> Polyline:
     cur = start
     points: np.ndarray | None = None
     edge_ids: list[int] = []
+    prev_dir: np.ndarray | None = None
     while True:
         avail = [e for e in comp_edges if e.id not in used_edges and (e.node_a == cur or e.node_b == cur)]
         if not avail:
             break
-        e = avail[0]
+        e = _choose_next_edge(graph, avail, cur, prev_dir)
         used_edges.add(e.id)
         edge_ids.append(e.id)
         pts, nxt = _oriented_points(graph, e, cur)
         points = pts if points is None else np.vstack([points, pts[1:]])
+        prev_dir = _direction(pts, at_start=False)
         cur = nxt
     assert points is not None
     closed = start == cur and len(points) > 2
