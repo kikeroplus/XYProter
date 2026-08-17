@@ -288,6 +288,16 @@ class GrblControlApp:
         ttk.Button(safety_frame, text="ソフトリセット", command=self._on_soft_reset).grid(row=0, column=2, padx=4, pady=4)
         ttk.Button(safety_frame, text="アラーム解除($X)", command=self._on_unlock).grid(row=0, column=3, padx=4, pady=4)
 
+        # -- 生コマンド送信($$設定変更など、G-code/GRBLコマンドを1行そのまま送る) --
+        ttk.Label(safety_frame, text="コマンド送信").grid(row=1, column=0, padx=4, pady=(0, 4), sticky="e")
+        self.raw_cmd_var = tk.StringVar(value="")
+        raw_cmd_entry = ttk.Entry(safety_frame, textvariable=self.raw_cmd_var, width=20)
+        raw_cmd_entry.grid(row=1, column=1, columnspan=2, padx=4, pady=(0, 4), sticky="ew")
+        raw_cmd_entry.bind("<Return>", lambda _e: self._on_send_raw_command())
+        ttk.Button(safety_frame, text="送信", command=self._on_send_raw_command).grid(
+            row=1, column=3, padx=4, pady=(0, 4)
+        )
+
         # ---- 文字描画 ----
         # 度重なる仕様追加でパラメータが1枚のフレームに平積みになっていたため、
         # 「フォント」「文字列入力(主役として横長・大きく)」「設定(カテゴリ別
@@ -718,6 +728,25 @@ class GrblControlApp:
         try:
             conn.unlock()
             self.job_status_var.set("アラーム解除($X)を送信しました")
+        except GrblError as e:
+            messagebox.showerror("GRBLエラー", str(e))
+
+    def _on_send_raw_command(self) -> None:
+        """任意のG-code/GRBLコマンド(\\$122=1500等)を1行そのまま送信する。
+
+        \\$\\$設定の変更など、GUIの他の機能がカバーしていない操作向け。
+        """
+        conn = self._require_conn()
+        if conn is None:
+            return
+        if self._warn_if_sending():
+            return
+        command = self.raw_cmd_var.get().strip()
+        if not command:
+            return
+        try:
+            resp = conn.send_line(command)
+            self.job_status_var.set(f"'{command}' -> {resp}")
         except GrblError as e:
             messagebox.showerror("GRBLエラー", str(e))
 
