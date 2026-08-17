@@ -16,7 +16,7 @@ def build_gcode_lines(
     pen: PenController | None = None,
     feed_rate: float = 1500.0,
     travel_feed_rate: float = 3000.0,
-    return_to_origin: bool = True,
+    advance_to_next_line: bool = True,
 ) -> list[str]:
     pen = pen or ZAxisPenController()
     lines: list[str] = []
@@ -37,12 +37,14 @@ def build_gcode_lines(
         lines.append(f"G0 F{travel_feed_rate:.1f}")
 
     lines.extend(pen.teardown())
-    if return_to_origin:
-        # Zは既にteardownで退避済みなので、その高さのままXYだけ原点へ戻す。
-        # 呼び出し側が送信のたびにG92でその時点の物理位置を(0,0,0)へ再定義する
-        # 運用のため、これにより次回送信は毎回同じ座標系で描画される(同じ位置をなぞる)。
+    if advance_to_next_line:
+        # Zは既にteardownで退避済みなので、その高さのままXYだけ次の行の先頭へ動かす。
+        # 呼び出し側が送信のたびにG92でその時点の物理位置を(0,0,0)へ再定義する運用の
+        # ため、これにより次回送信は続きの行から書き始められる(文章を紙に書き
+        # 継いでいくのと同じ動き)。
+        x, y = job.next_line_start_mm
         lines.append(f"G0 F{travel_feed_rate:.1f}")
-        lines.append("G0 X0.000 Y0.000")
+        lines.append(f"G0 X{x:.3f} Y{y:.3f}")
     return lines
 
 

@@ -117,6 +117,13 @@ def build_plot_job(glyph_results: list[GlyphPipelineResult], config: PipelineCon
     # 文章全体の行数を事前に計算してcanvas高さを合わせる必要をなくすため。
     canvas_h_mm = grid_rows * px_to_mm
 
+    # 書き終わりの次の行の先頭(行方向ピッチはcell高さ×line_spacing_factorで、
+    # セル自体の高さ(canvas_px)とは line_spacing_factor!=1.0 の場合に異なる)。
+    last_row_origin_px = max(gr.raster.cell_origin_px[0] for gr in glyph_results)
+    row_pitch_px = config.cell_px[1] * config.line_spacing_factor
+    next_line_row_px = last_row_origin_px + row_pitch_px
+    next_line_start_mm = (0.0, -next_line_row_px * px_to_mm)
+
     ordered_mm: list[Polyline] = []
     for poly in ordered_px:
         rows = poly.points[:, 0]
@@ -130,7 +137,12 @@ def build_plot_job(glyph_results: list[GlyphPipelineResult], config: PipelineCon
         ordered_mm = simplify_polylines(ordered_mm, config.simplify_tolerance_mm)
 
     stats = compute_stats(ordered_mm, start_pos=(0.0, 0.0))
-    return PlotJob(polylines=ordered_mm, canvas_size_mm=(canvas_w_mm, canvas_h_mm), stats=stats)
+    return PlotJob(
+        polylines=ordered_mm,
+        canvas_size_mm=(canvas_w_mm, canvas_h_mm),
+        stats=stats,
+        next_line_start_mm=next_line_start_mm,
+    )
 
 
 def run_text_pipeline(text: str, config: PipelineConfig) -> tuple[list[GlyphPipelineResult], PlotJob]:

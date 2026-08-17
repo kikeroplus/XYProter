@@ -5,13 +5,18 @@ from xyproter.pen_control import CustomCommandPenController, ZAxisPenController
 from xyproter.types import PlotJob, PlotStats, Polyline
 
 
-def _small_job() -> PlotJob:
+def _small_job(next_line_start_mm: tuple[float, float] = (0.0, -20.0)) -> PlotJob:
     polylines = [
         Polyline(points=np.array([[0.0, 0.0], [10.0, 0.0]])),
         Polyline(points=np.array([[5.0, 5.0], [5.0, 15.0]])),
     ]
     stats = PlotStats(n_paths=2, total_draw_distance=20.0, total_travel_distance=5.0, n_pen_lifts=2)
-    return PlotJob(polylines=polylines, canvas_size_mm=(50.0, 50.0), stats=stats)
+    return PlotJob(
+        polylines=polylines,
+        canvas_size_mm=(50.0, 50.0),
+        stats=stats,
+        next_line_start_mm=next_line_start_mm,
+    )
 
 
 def test_gcode_pen_up_down_count_matches_n_paths():
@@ -35,22 +40,21 @@ def test_gcode_contains_all_polyline_points():
     assert "X5.000 Y15.000" in text
 
 
-def test_gcode_returns_to_xy_origin_after_teardown_by_default():
-    job = _small_job()
+def test_gcode_advances_to_next_line_start_after_teardown_by_default():
+    job = _small_job(next_line_start_mm=(0.0, -20.0))
     pen = CustomCommandPenController(
         up_cmds=["PENUP"], down_cmds=["PENDOWN"], teardown_cmds=["TEARDOWN"]
     )
     lines = build_gcode_lines(job, pen=pen)
-    # 末尾は teardown -> 移動F指定 -> XY原点復帰、の順になるはず
+    # 末尾は teardown -> 移動F指定 -> 次の行の先頭への移動、の順になるはず
     assert lines[-3] == "TEARDOWN"
-    assert lines[-1] == "G0 X0.000 Y0.000"
+    assert lines[-1] == "G0 X0.000 Y-20.000"
 
 
-def test_gcode_return_to_origin_can_be_disabled():
-    job = _small_job()
-    lines = build_gcode_lines(job, pen=ZAxisPenController(), return_to_origin=False)
-    # このジョブ自体が(0,0)始点を含むため文字列の非存在では判定できず、末尾だけを見る
-    assert lines[-1] != "G0 X0.000 Y0.000"
+def test_gcode_advance_to_next_line_can_be_disabled():
+    job = _small_job(next_line_start_mm=(0.0, -20.0))
+    lines = build_gcode_lines(job, pen=ZAxisPenController(), advance_to_next_line=False)
+    assert lines[-1] != "G0 X0.000 Y-20.000"
 
 
 def test_gcode_is_placeholder_swappable_via_pen_controller():

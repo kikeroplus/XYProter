@@ -112,3 +112,6 @@ class PlotJob:
     polylines: list[Polyline]  # mm座標、描画順に確定済み
     canvas_size_mm: tuple[float, float]  # (width, height)
     stats: PlotStats
+    # 描画完了後にペンを移動させる先(mm座標、原点=先頭文字の左上)。
+    # 既定は「書き終わりの次の行の先頭」で、build_gcode_linesの終端移動先として使う。
+    next_line_start_mm: tuple[float, float] = (0.0, 0.0)

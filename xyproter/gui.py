@@ -57,7 +57,9 @@ DEFAULT_SETTINGS = {
     "min_z": -50.0,
     "max_z": 50.0,
     "step_mm": 1.0,
+    "jog_step_z": 1.0,
     "feed": 500.0,
+    "jog_feed_z": 200.0,
     "size_mm": 30.0,
     "line_spacing_mm": 30.0,
     "z_down_mm": 3.0,
@@ -115,7 +117,9 @@ class GrblControlApp:
                     "min_z": float(self.min_z_var.get()),
                     "max_z": float(self.max_z_var.get()),
                     "step_mm": float(self.step_var.get()),
+                    "jog_step_z": float(self.jog_step_z_var.get()),
                     "feed": float(self.feed_var.get()),
+                    "jog_feed_z": float(self.jog_feed_z_var.get()),
                     "size_mm": float(self.size_var.get()),
                     "line_spacing_mm": float(self.line_spacing_var.get()),
                     "z_down_mm": float(self.zdown_var.get()),
@@ -213,29 +217,68 @@ class GrblControlApp:
         ttk.Label(range_frame, text="Z最大").grid(row=1, column=2)
         ttk.Entry(range_frame, textvariable=self.max_z_var, width=8).grid(row=1, column=3)
 
-        # ---- 移動速度 ----
-        speed_frame = ttk.LabelFrame(self.root, text="移動速度")
-        speed_frame.grid(row=3, column=0, sticky="nsew", padx=6, pady=4)
-        ttk.Label(speed_frame, text="ステップ(mm)").grid(row=0, column=0)
+        # ---- 移動速度 + ナビゲーション ----
+        # どちらもroot直下のgridに置くと、列幅が「ゼロ点設定」等の他の行に
+        # 引っ張られてしまい隣同士に詰められなかったため、専用の行フレームに
+        # まとめてpack(side="left")で隙間なく隣接させる(draw_frame内の
+        # settings_rowと同じ「横並びフローレイアウト」パターン)。
+        movement_row = ttk.Frame(self.root)
+        movement_row.grid(row=3, column=0, columnspan=2, sticky="w", padx=0, pady=0)
+
+        # 設定値はXY/Zでくくって並べる(ステップ・フィードの種類別ではなく、
+        # 軸のまとまり単位でグループ化)。
+        speed_frame = ttk.LabelFrame(movement_row, text="移動速度 (mm / mm/min)")
+        speed_frame.pack(side="left", padx=6, pady=4)
+        ttk.Label(speed_frame, text="ステップXY").grid(row=0, column=0)
         self.step_var = tk.StringVar(value=str(s["step_mm"]))
         ttk.Combobox(
-            speed_frame, textvariable=self.step_var, values=STEP_OPTIONS, width=8, state="readonly"
+            speed_frame, textvariable=self.step_var, values=STEP_OPTIONS, width=5, state="readonly"
         ).grid(row=0, column=1)
-        ttk.Label(speed_frame, text="フィード(mm/min)").grid(row=1, column=0)
+        ttk.Label(speed_frame, text="フィードXY").grid(row=1, column=0)
         self.feed_var = tk.StringVar(value=str(s["feed"]))
         ttk.Combobox(
-            speed_frame, textvariable=self.feed_var, values=FEED_OPTIONS, width=8, state="readonly"
+            speed_frame, textvariable=self.feed_var, values=FEED_OPTIONS, width=6, state="readonly"
         ).grid(row=1, column=1)
+        ttk.Separator(speed_frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Label(speed_frame, text="ステップZ").grid(row=3, column=0)
+        self.jog_step_z_var = tk.StringVar(value=str(s["jog_step_z"]))
+        ttk.Combobox(
+            speed_frame, textvariable=self.jog_step_z_var, values=STEP_OPTIONS, width=5, state="readonly"
+        ).grid(row=3, column=1)
+        ttk.Label(speed_frame, text="フィードZ").grid(row=4, column=0)
+        self.jog_feed_z_var = tk.StringVar(value=str(s["jog_feed_z"]))
+        ttk.Combobox(
+            speed_frame, textvariable=self.jog_feed_z_var, values=FEED_OPTIONS, width=6, state="readonly"
+        ).grid(row=4, column=1)
 
         # ---- ナビゲーション ----
-        nav_frame = ttk.LabelFrame(self.root, text="ナビゲーション")
-        nav_frame.grid(row=3, column=1, sticky="nsew", padx=6, pady=4)
-        ttk.Button(nav_frame, text="Y+", command=lambda: self._on_jog("Y", 1)).grid(row=0, column=1, padx=4, pady=4)
-        ttk.Button(nav_frame, text="X-", command=lambda: self._on_jog("X", -1)).grid(row=1, column=0, padx=4, pady=4)
-        ttk.Button(nav_frame, text="X+", command=lambda: self._on_jog("X", 1)).grid(row=1, column=2, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Y-", command=lambda: self._on_jog("Y", -1)).grid(row=2, column=1, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Z+", command=lambda: self._on_jog("Z", 1)).grid(row=0, column=3, padx=4, pady=4)
-        ttk.Button(nav_frame, text="Z-", command=lambda: self._on_jog("Z", -1)).grid(row=2, column=3, padx=4, pady=4)
+        # 十字のジョグパッド(一文字戻る/X-/原点/X+/一文字進むを横軸、
+        # Y+/原点/Y-を縦軸)を中心に、縦軸の上下に一行戻る/一行進む、
+        # さらに右端にZ+/Z-を独立した列で配置する。移動速度ペインのすぐ右に
+        # packで隣接させる。
+        nav_frame = ttk.LabelFrame(movement_row, text="ナビゲーション")
+        nav_frame.pack(side="left", padx=6, pady=4)
+        ttk.Button(nav_frame, text="一行戻る", command=lambda: self._on_line_jog(forward=False)).grid(
+            row=0, column=2, padx=4, pady=4
+        )
+        ttk.Button(nav_frame, text="Y+", command=lambda: self._on_jog("Y", 1)).grid(row=1, column=2, padx=4, pady=4)
+        ttk.Button(nav_frame, text="一文字戻る", command=lambda: self._on_char_jog(forward=False)).grid(
+            row=2, column=0, padx=4, pady=4
+        )
+        ttk.Button(nav_frame, text="X-", command=lambda: self._on_jog("X", -1)).grid(row=2, column=1, padx=4, pady=4)
+        ttk.Button(nav_frame, text="原点(0,0)", command=self._on_return_to_origin).grid(
+            row=2, column=2, padx=4, pady=4
+        )
+        ttk.Button(nav_frame, text="X+", command=lambda: self._on_jog("X", 1)).grid(row=2, column=3, padx=4, pady=4)
+        ttk.Button(nav_frame, text="一文字進む", command=lambda: self._on_char_jog(forward=True)).grid(
+            row=2, column=4, padx=4, pady=4
+        )
+        ttk.Button(nav_frame, text="Y-", command=lambda: self._on_jog("Y", -1)).grid(row=3, column=2, padx=4, pady=4)
+        ttk.Button(nav_frame, text="一行進む", command=lambda: self._on_line_jog(forward=True)).grid(
+            row=4, column=2, padx=4, pady=4
+        )
+        ttk.Button(nav_frame, text="Z+", command=lambda: self._on_jog("Z", 1)).grid(row=1, column=5, padx=4, pady=4)
+        ttk.Button(nav_frame, text="Z-", command=lambda: self._on_jog("Z", -1)).grid(row=3, column=5, padx=4, pady=4)
 
         # ---- 安全操作(依頼仕様にはないが、事故歴を踏まえて追加) ----
         safety_frame = ttk.LabelFrame(self.root, text="安全操作")
@@ -261,6 +304,9 @@ class GrblControlApp:
             side="left", padx=6, fill="x", expand=True
         )
         ttk.Button(font_row, text="参照", command=self._browse_font).pack(side="left")
+        ttk.Button(font_row, text="Windowsフォント", command=self._browse_windows_font).pack(
+            side="left", padx=(4, 0)
+        )
 
         # -- 文字列入力(主役なので横長・大きめのフォントで目立たせる) --
         # 赤線は「文字数×文字入力欄の平均文字幅」で位置を近似しているため、
@@ -366,7 +412,9 @@ class GrblControlApp:
         # -- 実行ボタン --
         action_row = ttk.Frame(draw_frame)
         action_row.grid(row=4, column=0, sticky="ew", padx=6, pady=6)
-        ttk.Button(action_row, text="自動改行", command=self._on_auto_wrap).pack(side="left", padx=(0, 4))
+        auto_wrap_border = tk.Frame(action_row, bg="#87CEFA")
+        auto_wrap_border.pack(side="left", padx=(0, 4))
+        ttk.Button(auto_wrap_border, text="自動改行", command=self._on_auto_wrap).pack(padx=2, pady=2)
         ttk.Button(action_row, text="外周確認", command=self._on_outline_check).pack(side="left", padx=(0, 4))
         ttk.Button(action_row, text="シミュレーション", command=self._on_simulate).pack(side="left", padx=4)
         send_border = tk.Frame(action_row, bg="blue")
@@ -519,8 +567,12 @@ class GrblControlApp:
         if self._warn_if_sending():
             return
         try:
-            step = float(self.step_var.get())
-            feed = float(self.feed_var.get())
+            if axis == "Z":
+                step = float(self.jog_step_z_var.get())
+                feed = float(self.jog_feed_z_var.get())
+            else:
+                step = float(self.step_var.get())
+                feed = float(self.feed_var.get())
         except ValueError:
             messagebox.showerror("エラー", "ステップ/フィードの値を確認してください")
             return
@@ -535,6 +587,101 @@ class GrblControlApp:
                 # 基づく補正(initial_extra_down_mm)の前提が崩れる。安全側で無効化する。
                 self._last_final_lift_mm = 0.0
             self.job_status_var.set(f"{axis}を{delta:+.3f}mm移動しました")
+        except GrblError as e:
+            messagebox.showerror("GRBLエラー", str(e))
+        finally:
+            self._refresh_status()
+
+    def _on_line_jog(self, forward: bool) -> None:
+        """行間ピッチ(mm)分だけYをジョグする(一行進む/戻るボタン用)。
+
+        「行間(mm)」欄の値は[[_get_text_and_canvas]]のcanvas_h_mm計算と同じ前提で
+        「1行あたりのYピッチ」そのものなので、変換なしにそのままステップ量として使える。
+        forward=True(一行進む)は文章が続く方向=Y-(下)、False(一行戻る)はY+(上)。
+        """
+        conn = self._require_conn()
+        if conn is None:
+            return
+        if self._warn_if_sending():
+            return
+        try:
+            line_spacing_mm = float(self.line_spacing_var.get())
+            feed = float(self.feed_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "行間(mm)/フィードの値を確認してください")
+            return
+
+        delta = -line_spacing_mm if forward else line_spacing_mm
+        try:
+            conn.send_line("G91")
+            conn.send_line(f"G1 Y{delta:.4f} F{feed:.1f}")
+            conn.send_line("G90")
+            self.job_status_var.set(f"Yを{delta:+.3f}mm移動しました({'一行進む' if forward else '一行戻る'})")
+        except GrblError as e:
+            messagebox.showerror("GRBLエラー", str(e))
+        finally:
+            self._refresh_status()
+
+    def _on_char_jog(self, forward: bool = True) -> None:
+        """1文字分のXピッチ(mm)だけXをジョグする(一文字進む/戻るボタン用)。
+
+        文字ピッチ=文字サイズ(mm)×文字間隔(letter_spacing_factor)。
+        [[_get_text_and_canvas]]のcanvas_w_mm計算と同じ前提。
+        forward=True(一文字進む)はX+(右)、False(一文字戻る)はX-(左)。
+        """
+        conn = self._require_conn()
+        if conn is None:
+            return
+        if self._warn_if_sending():
+            return
+        try:
+            size_mm = float(self.size_var.get())
+            letter_spacing_factor = float(self.letter_spacing_var.get())
+            feed = float(self.feed_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "文字サイズ/文字間隔/フィードの値を確認してください")
+            return
+
+        pitch = size_mm * letter_spacing_factor
+        delta = pitch if forward else -pitch
+        try:
+            conn.send_line("G91")
+            conn.send_line(f"G1 X{delta:.4f} F{feed:.1f}")
+            conn.send_line("G90")
+            self.job_status_var.set(f"Xを{delta:+.3f}mm移動しました({'一文字進む' if forward else '一文字戻る'})")
+        except GrblError as e:
+            messagebox.showerror("GRBLエラー", str(e))
+        finally:
+            self._refresh_status()
+
+    def _on_return_to_origin(self) -> None:
+        """現在の作業原点(0,0)へXYだけを移動する(Zは動かさない)。
+
+        文字列送信は既定で「書き終わりの次の行の先頭」に移動して終わる
+        仕様のため、書き終わった位置から改めて1文字目の左上(原点)を
+        確認・やり直したい場合に使う。zero_work_origin()は呼ばないため、
+        直前の送信/ゼロ点設定が定義した作業座標系はそのまま、その(0,0)へ
+        戻るだけ。
+        """
+        conn = self._require_conn()
+        if conn is None:
+            return
+        if self._warn_if_sending():
+            return
+        try:
+            travel_feed = float(self.travel_feed_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "送り速度(移動)を確認してください")
+            return
+        if not messagebox.askyesno(
+            "原点に戻る",
+            "現在の作業原点(0,0)へXYだけを移動します(Zは動かしません)。\n続行しますか?",
+        ):
+            return
+        try:
+            conn.send_line("G90")
+            conn.send_line(f"G0 X0.000 Y0.000 F{travel_feed:.1f}")
+            self.job_status_var.set("原点(0,0)へ移動しました")
         except GrblError as e:
             messagebox.showerror("GRBLエラー", str(e))
         finally:
@@ -576,12 +723,96 @@ class GrblControlApp:
 
     # ---------- フォント選択 ----------
     def _browse_font(self) -> None:
+        """任意フォルダ(プロジェクト同梱フォント等)向けの通常のファイル選択ダイアログ。
+
+        C:\\Windows\\Fontsは特殊なシェル名前空間(CLSIDによる「Fonts」ビュー)
+        として開かれるため、標準のファイル選択ダイアログでこのフォルダに
+        移動すると中身が一切表示されない(既知のWindowsの挙動)。initialdirへ
+        `\\\\?\\`プレフィックスを付ける回避策も効かなかったため、Windows
+        フォントを選ぶ場合は代わりに「Windowsフォント」ボタン
+        (`_browse_windows_font`)を使う。
+        """
+        current = self.font_var.get().strip()
+        initial_dir = Path(current).parent if current else None
+        if initial_dir is not None and not initial_dir.is_dir():
+            initial_dir = None
+
+        kwargs = {}
+        if initial_dir is not None:
+            kwargs["initialdir"] = str(initial_dir)
         path = filedialog.askopenfilename(
             title="フォントファイルを選択",
             filetypes=[("フォント", "*.ttf *.ttc *.otf"), ("すべて", "*.*")],
+            **kwargs,
         )
         if path:
             self.font_var.set(path)
+
+    def _browse_windows_font(self) -> None:
+        """C:\\Windows\\Fontsから選ぶ専用ボタン。
+
+        標準のファイル選択ダイアログはこのフォルダを特殊なシェル名前空間
+        として開くため中身が表示されない([[_browse_font]]参照)。この
+        フォルダに限りPython側で直接ファイル一覧を取得し(シェルを経由
+        しないので影響を受けない)、自前の簡易リスト選択ダイアログで選ばせる。
+        """
+        path = self._pick_font_from_fonts_dir()
+        if path:
+            self.font_var.set(path)
+
+    def _pick_font_from_fonts_dir(self) -> str | None:
+        fonts_dir = Path(r"C:\Windows\Fonts")
+        try:
+            files = sorted(
+                (p for p in fonts_dir.iterdir() if p.suffix.lower() in (".ttf", ".ttc", ".otf")),
+                key=lambda p: p.name.lower(),
+            )
+        except OSError as e:
+            messagebox.showerror("エラー", f"{fonts_dir} を読み取れませんでした: {e}")
+            return None
+        if not files:
+            messagebox.showerror("エラー", f"{fonts_dir} 内にフォントファイルが見つかりませんでした")
+            return None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("フォントファイルを選択 (C:\\Windows\\Fonts)")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        list_row = ttk.Frame(dialog)
+        list_row.pack(side="top", fill="both", expand=True, padx=6, pady=6)
+        listbox = tk.Listbox(list_row, width=50, height=20)
+        for p in files:
+            listbox.insert("end", p.name)
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(list_row, orient="vertical", command=listbox.yview)
+        scrollbar.pack(side="left", fill="y")
+        listbox.config(yscrollcommand=scrollbar.set)
+        listbox.selection_set(0)
+        listbox.focus_set()
+
+        result: dict[str, str | None] = {"path": None}
+
+        def _on_ok() -> None:
+            sel = listbox.curselection()
+            if sel:
+                result["path"] = str(files[sel[0]])
+            dialog.destroy()
+
+        def _on_cancel() -> None:
+            dialog.destroy()
+
+        listbox.bind("<Double-Button-1>", lambda e: _on_ok())
+        dialog.bind("<Return>", lambda e: _on_ok())
+        dialog.bind("<Escape>", lambda e: _on_cancel())
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
+        ttk.Button(btn_row, text="キャンセル", command=_on_cancel).pack(side="right")
+        ttk.Button(btn_row, text="OK", command=_on_ok).pack(side="right", padx=(0, 4))
+
+        dialog.wait_window()
+        return result["path"]
 
     # ---------- 文字送信 ----------
     @staticmethod
@@ -857,6 +1088,7 @@ class GrblControlApp:
             return
 
         actual_w_mm, actual_h_mm = job.canvas_size_mm
+        next_x_mm, next_y_mm = job.next_line_start_mm
         mode_desc = (
             f"高速モード(許容誤差{simplify_tolerance_mm:.2f}mm)" if self.fast_mode_var.get() else "通常モード"
         )
@@ -865,7 +1097,8 @@ class GrblControlApp:
             f"「{text}」を{size_mm:.0f}mmサイズで描画します。[{mode_desc}]\n{job.stats.summary()}\n\n"
             f"描画範囲: X 0〜{actual_w_mm:.1f}mm, Y 0〜-{actual_h_mm:.1f}mm\n"
             f"送り速度: 描画{draw_feed:.0f}mm/min, 移動{travel_feed:.0f}mm/min, Z{z_feed:.0f}mm/min\n"
-            f"終了時はペンを追加で{final_lift_mm:.1f}mm退避させます\n"
+            f"終了時はペンを追加で{final_lift_mm:.1f}mm退避させ、"
+            f"書き終わりの次の行の先頭(X{next_x_mm:.1f}, Y{next_y_mm:.1f})へ移動して終わります\n"
             "原点(0,0)＝1文字目の左上を基準に、X+(右)・Y-(下)方向へ読み順に描画します。\n"
             "実際にX+が右・Y-が下に動くか未確認の場合は、先に「外周確認」ボタンで低速動作を目視確認してください。\n\n"
             "電源投入位置から見て、キャリッジが書き始めたい位置にあり、"
