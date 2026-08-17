@@ -49,6 +49,13 @@ Z_FEED_OPTIONS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000,
 XY_FEED_OPTIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
 LETTER_SPACING_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
+# $1(Step Idle Delay)。この機体はENABLEピンがX/Y/Z共通配線のため、GRBL標準では
+# 「Z軸のみ」励磁保持を切り替える手段がない([[project-grbl-plotter-hardware]]参照)。
+# そのためトルク保持ON/OFFは全軸に対して$1を切り替える形で実装する。
+# OFF値の25はこの機体でこれまで使われてきたGRBLデフォルト値。
+GRBL_IDLE_DELAY_HOLD = 255  # ON: 常時励磁(モーター温度上昇と引き換えにペン位置を保持)
+GRBL_IDLE_DELAY_DEFAULT = 25  # OFF: 25ms後にアイドル解放(通常運用)
+
 DEFAULT_SETTINGS = {
     "port": "",
     "baud": 115200,
@@ -297,6 +304,19 @@ class GrblControlApp:
         ttk.Button(safety_frame, text="送信", command=self._on_send_raw_command).grid(
             row=1, column=3, padx=4, pady=(0, 4)
         )
+
+        # -- トルク保持モード(全軸$1=255⇔25の切り替え) --
+        # ENABLEピンがX/Y/Z共通配線のため軸単体では切り替えられない
+        # ([[project-grbl-plotter-hardware]]参照)。起動時は必ずOFFから始まり
+        # 設定ファイルにも保存しない(モーター発熱に関わる設定を接続のたびに
+        # 無自覚に引き継がせないため)。
+        self.torque_hold_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            safety_frame,
+            text="トルク保持(全軸, $1=255)",
+            variable=self.torque_hold_var,
+            command=self._on_toggle_torque_hold,
+        ).grid(row=1, column=4, padx=(12, 4), pady=(0, 4), sticky="w")
 
         # ---- 文字描画 ----
         # 度重なる仕様追加でパラメータが1枚のフレームに平積みになっていたため、
@@ -750,6 +770,44 @@ class GrblControlApp:
         except GrblError as e:
             messagebox.showerror("GRBLエラー", str(e))
 
+    def _on_toggle_torque_hold(self) -> None:
+        """トルク保持チェックボックスの切り替えに応じて$1(Step Idle Delay)を送信する。
+
+        ON: $1=255で常時励磁(モーター発熱と引き換えにアイドル中もペン位置を保持)。
+        OFF: $1=25でGRBLデフォルトに戻す(アイドル後に励磁解放)。
+        全軸共通設定のためX/Yも道連れで切り替わる([[project-grbl-plotter-hardware]]参照)。
+        接続なし/送信中/GRBLエラー時はチェック状態を操作前に戻す。
+        """
+        want_hold = self.torque_hold_var.get()
+        conn = self._require_conn()
+        if conn is None:
+            self.torque_hold_var.set(not want_hold)
+            return
+        if self._warn_if_sending():
+            self.torque_hold_var.set(not want_hold)
+            return
+        value = GRBL_IDLE_DELAY_HOLD if want_hold else GRBL_IDLE_DELAY_DEFAULT
+        command = f"$1={value}"
+        try:
+            resp = conn.send_line(command)
+            state_label = "トルク保持ON(常時励磁)" if want_hold else "トルク保持OFF(通常)"
+            self.job_status_var.set(f"{state_label}: '{command}' -> {resp}")
+        except GrblError as e:
+            self.torque_hold_var.set(not want_hold)
+            messagebox.showerror("GRBLエラー", str(e))
+
+    def _auto_disable_torque_hold(self) -> None:
+        """文字列送信が正常完了した際、トルク保持をONのままにせず自動でOFFに戻す。
+
+        「書き始め直前にON、書き終わりでOFF」という運用(ユーザー指示、モーター発熱を
+        必要な間だけに抑えるため)。キャンセル・GRBLエラーで中断した場合はここを通らず
+        ONのまま維持する(「再開」で送信を続ける可能性を優先する)。
+        """
+        if not self.torque_hold_var.get():
+            return
+        self.torque_hold_var.set(False)
+        self._on_toggle_torque_hold()
+
     # ---------- フォント選択 ----------
     def _browse_font(self) -> None:
         """任意フォルダ(プロジェクト同梱フォント等)向けの通常のファイル選択ダイアログ。
@@ -1152,6 +1210,7 @@ class GrblControlApp:
 
         def worker() -> None:
             cancelled_at: int | None = None
+            completed = False
             try:
                 conn.zero_work_origin()
                 parsed = parse_status(conn.status())
@@ -1176,18 +1235,30 @@ class GrblControlApp:
                 else:
                     self._last_final_lift_mm = final_lift_mm  # 次回送信のZ基準ズレ補正に使う
                     self.root.after(0, lambda: self.job_status_var.set("送信完了"))
+                    # 最終行の'ok'はプランナーバッファに積まれた時点で返るため、この時点では
+                    # まだ物理的にRun状態(動作中)の可能性がある。$系コマンドはIdle状態でしか
+                    # 受け付けられず(error:8)、Run中に送ると失敗する。バックグラウンドスレッド
+                    # なのでUIをブロックせずにIdleへ落ち着くまでポーリングできる。
+                    idle_wait = 0.0
+                    while idle_wait < 10.0:
+                        if parse_status(conn.status()).get("state") == "Idle":
+                            break
+                        idle_wait += 0.2
+                    completed = True
             except GrblError as e:
                 self.root.after(0, lambda: messagebox.showerror("GRBLエラー", str(e)))
                 self.root.after(0, lambda: self.job_status_var.set(f"エラーで中断: {e}"))
             finally:
                 # 他のボタンの送信中ガード(_warn_if_sending)が内部呼び出しの
-                # _refresh_statusまで誤ってブロックしないよう、after登録より
-                # 先にワーカースレッド内で同期的にリセットしておく。
+                # _refresh_statusや_auto_disable_torque_holdまで誤ってブロックしないよう、
+                # after登録より先にワーカースレッド内で同期的にリセットしておく。
                 self._cancel_event = None
                 self._send_thread = None
                 self.root.after(0, self._refresh_status)
                 self.root.after(0, lambda: self.send_btn.config(state="normal"))
                 self.root.after(0, lambda: self.cancel_btn.config(state="disabled"))
+                if completed:
+                    self.root.after(0, self._auto_disable_torque_hold)
 
         self._send_thread = threading.Thread(target=worker, daemon=True)
         self._send_thread.start()
