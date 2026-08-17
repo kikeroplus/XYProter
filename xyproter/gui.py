@@ -777,6 +777,11 @@ class GrblControlApp:
         OFF: $1=25でGRBLデフォルトに戻す(アイドル後に励磁解放)。
         全軸共通設定のためX/Yも道連れで切り替わる([[project-grbl-plotter-hardware]]参照)。
         接続なし/送信中/GRBLエラー時はチェック状態を操作前に戻す。
+
+        GRBLは$1の変更を即座には反映せず、次にステッパーがモーション終了→アイドルへ
+        遷移するタイミングで初めて新しい値を評価する。そのため$1送信直後に微小な
+        往復移動(_kick_stepper_idle_timer)を挟み、そのイベントを人工的に起こして
+        確実に反映させる(実機で確認: $1送信だけでは励磁状態が変わらなかった)。
         """
         want_hold = self.torque_hold_var.get()
         conn = self._require_conn()
@@ -790,11 +795,26 @@ class GrblControlApp:
         command = f"$1={value}"
         try:
             resp = conn.send_line(command)
+            self._kick_stepper_idle_timer(conn)
             state_label = "トルク保持ON(常時励磁)" if want_hold else "トルク保持OFF(通常)"
             self.job_status_var.set(f"{state_label}: '{command}' -> {resp}")
         except GrblError as e:
             self.torque_hold_var.set(not want_hold)
             messagebox.showerror("GRBLエラー", str(e))
+
+    def _kick_stepper_idle_timer(self, conn: GrblConnection) -> None:
+        """$1(Step Idle Delay)の変更をGRBLに即座に反映させるための微小な往復移動。
+
+        GRBLの$1はステッパーのモーション終了→アイドル遷移イベントの中でしか評価
+        されないため、既にアイドルなモーターは$1を変えただけでは励磁状態が変わらない
+        (ONでも励磁されず、OFFでも励磁されたまま)。往復移動でこのイベントを起こす。
+        Z軸ステップ/mm=50前後の想定で複数ステップ確実に動く量として0.1mmを使い、
+        往復させて最終的な物理位置は変えない(RelativeZPenController運用でも安全)。
+        """
+        conn.send_line("G91")
+        conn.send_line("G1 Z0.1 F60")
+        conn.send_line("G1 Z-0.1 F60")
+        conn.send_line("G90")
 
     def _auto_disable_torque_hold(self) -> None:
         """文字列送信が正常完了した際、トルク保持をONのままにせず自動でOFFに戻す。
