@@ -1019,9 +1019,12 @@ class GrblControlApp:
         """現在の範囲設定(横方向・最大X)をもとに、入力文字列へ自動で改行を挿入する。
 
         ユーザーが手動で入力した改行(段落区切り)はそのまま尊重し、各行を
-        独立に折り返す。1行に収まる最大文字数は赤線ガイドと同じ`_max_count`の式
-        (canvas_w_mm <= max_x を満たす最大文字数)で求める。固定ピッチのグリッド
-        配置(`rasterize_grid`)に合わせ、文字幅は字種によらず一律1文字=1列として扱う。
+        独立に折り返す。等幅モード(既定)では1行に収まる最大文字数を赤線ガイドと
+        同じ`_max_count`の式(canvas_w_mm <= max_x を満たす最大文字数)で求め、
+        文字幅は字種によらず一律1文字=1列として扱う。TTF風可変幅モード
+        (proportional_spacing)では字種ごとに送り幅(advance)が大きく異なり
+        (例:"i"と"W")、この固定ピッチの近似では折り返し位置が実際の描画結果と
+        大きくずれるため、`_wrap_line_proportional`で実測advance幅を積算して判定する。
         """
         try:
             max_x = float(self.max_x_var.get())
@@ -1034,20 +1037,38 @@ class GrblControlApp:
             messagebox.showerror("エラー", "文字サイズを確認してください")
             return
 
-        max_cols = int(self._max_count(max_x, size_mm, letter_spacing_factor))
-        if max_cols < 1:
-            messagebox.showerror("エラー", "現在の範囲設定では1文字も描画範囲に収まりません")
-            return
-
         text = self.text_widget.get("1.0", "end-1c")
-        wrapped_lines: list[str] = []
-        for line in text.split("\n"):
-            if len(line) <= max_cols:
-                wrapped_lines.append(line)
-                continue
-            for i in range(0, len(line), max_cols):
-                wrapped_lines.append(line[i : i + max_cols])
-        wrapped_text = "\n".join(wrapped_lines)
+
+        if self.proportional_spacing_var.get():
+            font = self._load_font_for_wrap()
+            if font is not None:
+                budget_px = (
+                    float("inf")
+                    if letter_spacing_factor <= 0
+                    else max_x * CELL_PX[0] / size_mm / letter_spacing_factor
+                )
+                dummy_draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+                wrapped_lines = [
+                    segment
+                    for line in text.split("\n")
+                    for segment in self._wrap_line_proportional(line, font, dummy_draw, budget_px)
+                ]
+                wrapped_text = "\n".join(wrapped_lines)
+                status_suffix = "(TTF風可変幅の実測サイズに基づく)"
+            else:
+                # フォントが読めない場合は等幅モードと同じ固定ピッチ近似にフォールバックする
+                # (`_estimate_proportional_canvas_w_mm`のフォールバックと同じ考え方)。
+                wrapped_text, status_suffix = self._wrap_text_fixed_pitch(
+                    text, max_x, size_mm, letter_spacing_factor
+                )
+                if wrapped_text is None:
+                    return
+        else:
+            wrapped_text, status_suffix = self._wrap_text_fixed_pitch(
+                text, max_x, size_mm, letter_spacing_factor
+            )
+            if wrapped_text is None:
+                return
 
         if wrapped_text == text:
             self.job_status_var.set("自動改行: 変更はありませんでした(すでに範囲内です)")
@@ -1055,7 +1076,60 @@ class GrblControlApp:
 
         self.text_widget.delete("1.0", "end")
         self.text_widget.insert("1.0", wrapped_text)
-        self.job_status_var.set(f"自動改行しました(横約{max_cols}文字ごと)")
+        self.job_status_var.set(f"自動改行しました{status_suffix}")
+
+    def _load_font_for_wrap(self) -> "ImageFont.FreeTypeFont | None":
+        try:
+            return ImageFont.truetype(self.font_var.get(), size=round(FONT_SIZE_PT), index=0)
+        except (OSError, ValueError):
+            return None
+
+    def _wrap_text_fixed_pitch(
+        self, text: str, max_x: float, size_mm: float, letter_spacing_factor: float
+    ) -> tuple[str | None, str]:
+        """固定ピッチ(1文字=1列)近似での折り返し(等幅モード用)。"""
+        max_cols = int(self._max_count(max_x, size_mm, letter_spacing_factor))
+        if max_cols < 1:
+            messagebox.showerror("エラー", "現在の範囲設定では1文字も描画範囲に収まりません")
+            return None, ""
+
+        wrapped_lines: list[str] = []
+        for line in text.split("\n"):
+            if len(line) <= max_cols:
+                wrapped_lines.append(line)
+                continue
+            for i in range(0, len(line), max_cols):
+                wrapped_lines.append(line[i : i + max_cols])
+        return "\n".join(wrapped_lines), f"(横約{max_cols}文字ごと)"
+
+    @staticmethod
+    def _wrap_line_proportional(
+        line: str, font: "ImageFont.FreeTypeFont", draw: "ImageDraw.ImageDraw", budget_px: float
+    ) -> list[str]:
+        """1行分のテキストを、実測advance幅(px)の累積が`budget_px`を超えない範囲で折り返す。
+
+        `rasterize_grid`のpen_x蓄積(advance_px×letter_spacing_factor)と同じ量を
+        budget_px側であらかじめletter_spacing_factorで割ることで、ここでは
+        素のadvance_pxを積算するだけで済むようにしている。1文字もまだ置いていない
+        行に対しては、budget_pxを超える幅の文字でも最低1文字は必ず置く
+        (無限ループ防止、かつ単独では収まらない文字を消さないため)。
+        """
+        if not line:
+            return [line]
+        segments: list[str] = []
+        current = ""
+        current_px = 0.0
+        for ch in line:
+            ch_px = draw.textlength(ch, font=font)
+            if current and current_px + ch_px > budget_px:
+                segments.append(current)
+                current = ch
+                current_px = ch_px
+            else:
+                current += ch
+                current_px += ch_px
+        segments.append(current)
+        return segments
 
     # ---------- 描画範囲ガイド(赤線) ----------
     def _on_text_modified(self, event: tk.Event) -> None:
