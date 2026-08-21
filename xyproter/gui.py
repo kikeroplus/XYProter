@@ -22,6 +22,8 @@ import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageDraw, ImageFont
+
 from .gcode_export import build_gcode_lines, build_outline_check_gcode
 from .grbl_sender import GrblConnection, GrblError, check_xy_bounds, parse_status
 from .pen_control import RelativeZPenController
@@ -48,6 +50,12 @@ Z_FEED_OPTIONS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000,
 # 将来的な機体上限の引き上げも見据えてGUI上は5000mm/minまで選択肢に含める。
 XY_FEED_OPTIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
 LETTER_SPACING_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0]
+
+# 送信/シミュレーション/外周確認で PipelineConfig に渡す固定値。_get_text_and_canvas の
+# プロポーショナル幅見積もり([[project-xyproter-pipeline]]のTTF風モード)でも同じ値を
+# 使い、実際の pipeline.rasterize_grid と一致させる。
+FONT_SIZE_PT = 280.0
+CELL_PX = (400, 400)
 
 # $1(Step Idle Delay)。この機体はENABLEピンがX/Y/Z共通配線のため、GRBL標準では
 # 「Z軸のみ」励磁保持を切り替える手段がない([[project-grbl-plotter-hardware]]参照)。
@@ -959,16 +967,52 @@ class GrblControlApp:
         実際の描画時のY方向サイズは`pipeline.build_plot_job`が実際の行数から
         逆算するため、ここで計算するcanvas_h_mmは描画結果そのものには影響しない
         (外周確認や送信前確認ダイアログなど、パイプライン実行前の概算表示にのみ使う)。
-        canvas_w_mm/canvas_h_mmは配置ピッチ(letter_spacing_factor/line_spacing_factor倍)で
-        (n-1)個の間隔＋最後の1文字分として計算し、`pipeline.rasterize_grid`の配置と一致させる。
+        canvas_w_mmは`config.canvas_size_mm`としてpx_to_mm換算の基準に使われるため、
+        こちらは実際の文字サイズ(mm)に直結する。等幅モード(既定)ではセル幅(=1文字)
+        固定ピッチで(n-1)個の間隔＋最後の1文字分として計算し、`pipeline.rasterize_grid`の
+        配置と一致させる。TTF風可変幅モード(proportional_spacing)ではセル幅ではなく
+        文字ごとのフォント送り幅(advance)がピッチになり字種構成で総幅が変わるため、
+        同じ式を使うとcanvas_w_mmが実際のピクセル総幅と食い違い、結果としてpx_to_mmが
+        ずれて文字サイズが等幅モードと大きく異なってしまう。そのため
+        `_estimate_proportional_canvas_w_mm`で実際のadvance幅を測って揃える。
         """
         text = self.text_widget.get("1.0", "end-1c")
         lines = text.split("\n")
-        n_cols = max((len(line) for line in lines), default=1)
         n_rows = len(lines)
-        canvas_w_mm = size_mm * (max(n_cols - 1, 0) * letter_spacing_factor + 1)
         canvas_h_mm = size_mm * (max(n_rows - 1, 0) * line_spacing_factor + 1)
+        if self.proportional_spacing_var.get():
+            canvas_w_mm = self._estimate_proportional_canvas_w_mm(text, size_mm, letter_spacing_factor)
+        else:
+            n_cols = max((len(line) for line in lines), default=1)
+            canvas_w_mm = size_mm * (max(n_cols - 1, 0) * letter_spacing_factor + 1)
         return text, canvas_w_mm, canvas_h_mm
+
+    def _estimate_proportional_canvas_w_mm(
+        self, text: str, size_mm: float, letter_spacing_factor: float
+    ) -> float:
+        """TTF風可変幅モードでの実際のフォント送り幅(advance)から`canvas_w_mm`を見積もる。
+
+        `pipeline.build_plot_job`のプロポーショナル配置では、行内の送り幅合計
+        (px)×letter_spacing_factorがグリッド全体の横幅(px)になる
+        (`rasterize_grid`のpen_x蓄積と同じ式)。px_to_mm = canvas_w_mm / grid_cols_px
+        なので、セル幅(CELL_PX[0])あたりsize_mmになるようcanvas_w_mmを
+        grid_cols_px * size_mm / CELL_PX[0] として逆算し、等幅モードと同じ
+        「1セル=size_mm」の意味を保つ。
+        """
+        try:
+            font = ImageFont.truetype(self.font_var.get(), size=round(FONT_SIZE_PT), index=0)
+        except (OSError, ValueError):
+            n_cols = max((len(line) for line in text.split("\n")), default=1)
+            return size_mm * (max(n_cols - 1, 0) * letter_spacing_factor + 1)
+
+        dummy_draw = ImageDraw.Draw(Image.new("L", (1, 1)))
+        grid_cols_px = 0.0
+        for line in text.split("\n"):
+            row_advance_px = sum(dummy_draw.textlength(ch, font=font) for ch in line)
+            grid_cols_px = max(grid_cols_px, row_advance_px * letter_spacing_factor)
+        if grid_cols_px <= 0:
+            return size_mm
+        return grid_cols_px * size_mm / CELL_PX[0]
 
     # ---------- 自動改行 ----------
     def _on_auto_wrap(self) -> None:
@@ -1177,8 +1221,8 @@ class GrblControlApp:
 
         config = PipelineConfig(
             font_path=Path(self.font_var.get()),
-            font_size_pt=280.0,
-            cell_px=(400, 400),
+            font_size_pt=FONT_SIZE_PT,
+            cell_px=CELL_PX,
             canvas_size_mm=(canvas_w_mm, canvas_h_mm),
             simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
             letter_spacing_factor=letter_spacing_factor,
@@ -1336,8 +1380,8 @@ class GrblControlApp:
 
         config = PipelineConfig(
             font_path=Path(self.font_var.get()),
-            font_size_pt=280.0,
-            cell_px=(400, 400),
+            font_size_pt=FONT_SIZE_PT,
+            cell_px=CELL_PX,
             canvas_size_mm=(canvas_w_mm, canvas_h_mm),
             simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
             letter_spacing_factor=letter_spacing_factor,
