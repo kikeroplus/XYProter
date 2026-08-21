@@ -41,8 +41,9 @@ class PipelineConfig:
     merge_factor: float = 0.85
     columns: int | None = None
     simplify_tolerance_mm: float | None = None  # モード1(既定)=None=間引きなし。値を指定すると高速モード
-    letter_spacing_factor: float = 1.0  # セル幅に対する列方向配置ピッチの倍率。既定1.0、<1で文字間を詰める
+    letter_spacing_factor: float = 1.0  # 列方向配置ピッチの倍率。既定1.0、<1で文字間を詰める
     line_spacing_factor: float = 1.0  # セル高さに対する行方向配置ピッチの倍率。既定1.0、文字サイズと独立に行間を調整できる
+    proportional_spacing: bool = False  # False(既定)=セル幅固定の等幅配置。True=文字ごとのフォント送り幅を使うプロポーショナル配置
 
 
 @dataclass
@@ -110,7 +111,21 @@ def build_plot_job(glyph_results: list[GlyphPipelineResult], config: PipelineCon
             cur_pos = (float(char_ordered[-1].points[-1][0]), float(char_ordered[-1].points[-1][1]))
 
     grid_rows = max(gr.raster.cell_origin_px[0] + gr.raster.canvas_px[1] for gr in glyph_results)
-    grid_cols = max(gr.raster.cell_origin_px[1] + gr.raster.canvas_px[0] for gr in glyph_results)
+    if config.proportional_spacing:
+        # プロポーショナル配置では cell_origin_px はラスタライズ用キャンバス(cell_w
+        # 固定)の原点であり、中央揃え分のパディングが文字ごとに違うため、
+        # rasterize_grid と同じ式でパディングを足し戻してペン位置(送り幅の右端)に
+        # 変換してから幅を求める必要がある(cell_w固定のcanvas_pxをそのまま
+        # 足すと従来モードのようには揃わない)。
+        cell_w = config.cell_px[0]
+        grid_cols = max(
+            gr.raster.cell_origin_px[1]
+            + (cell_w - gr.raster.advance_px) / 2
+            + gr.raster.advance_px * config.letter_spacing_factor
+            for gr in glyph_results
+        )
+    else:
+        grid_cols = max(gr.raster.cell_origin_px[1] + gr.raster.canvas_px[0] for gr in glyph_results)
     canvas_w_mm, _ = config.canvas_size_mm
     px_to_mm = canvas_w_mm / grid_cols if grid_cols > 0 else 1.0
     # 高さはconfig指定値を使わず実際に使用した行数から逆算する。呼び出し側が
@@ -157,6 +172,7 @@ def run_text_pipeline(text: str, config: PipelineConfig) -> tuple[list[GlyphPipe
         threshold=config.threshold,
         letter_spacing_factor=config.letter_spacing_factor,
         line_spacing_factor=config.line_spacing_factor,
+        proportional_spacing=config.proportional_spacing,
     )
     glyph_results = [process_glyph(r, config) for r in rasters]
     job = build_plot_job(glyph_results, config)

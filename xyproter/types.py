@@ -26,6 +26,7 @@ class GlyphRaster:
     font_index: int
     font_size_pt: float
     cell_origin_px: tuple[float, float] = (0.0, 0.0)  # グリッド配置時の左上オフセット (row_offset, col_offset)
+    advance_px: float = 0.0  # フォントの送り幅(px)。プロポーショナル配置の列ピッチ計算に使う
 
 
 @dataclass

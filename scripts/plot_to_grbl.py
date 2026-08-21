@@ -72,6 +72,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="文字間隔の倍率(セル幅に対する列方向配置ピッチ)。既定1.0、1未満で文字間を詰める",
     )
     parser.add_argument(
+        "--proportional-spacing",
+        action="store_true",
+        help="TTFの文字ごとの送り幅を使ったプロポーショナル配置にする(既定はセル幅固定の等幅配置)",
+    )
+    parser.add_argument(
         "--simplify-tolerance-mm",
         type=float,
         default=None,
@@ -157,6 +162,7 @@ def main(argv: list[str] | None = None) -> None:
         canvas_size_mm=(canvas_w_mm, canvas_h_mm),
         simplify_tolerance_mm=args.simplify_tolerance_mm,
         letter_spacing_factor=args.letter_spacing,
+        proportional_spacing=args.proportional_spacing,
     )
 
     glyph_results, job = run_text_pipeline(text, config)

@@ -47,7 +47,7 @@ Z_FEED_OPTIONS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 2000,
 # それを超える値を選んでもGRBLが$110/$111で自動的にクランプするため実害はないが、
 # 将来的な機体上限の引き上げも見据えてGUI上は5000mm/minまで選択肢に含める。
 XY_FEED_OPTIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000]
-LETTER_SPACING_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+LETTER_SPACING_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0]
 
 # $1(Step Idle Delay)。この機体はENABLEピンがX/Y/Z共通配線のため、GRBL標準では
 # 「Z軸のみ」励磁保持を切り替える手段がない([[project-grbl-plotter-hardware]]参照)。
@@ -73,6 +73,7 @@ DEFAULT_SETTINGS = {
     "z_feed": 200.0,
     "final_lift_mm": 15.0,
     "letter_spacing_factor": 1.0,
+    "proportional_spacing": False,
     "draw_feed": 300.0,
     "travel_feed": 600.0,
     "font_path": r"C:\Windows\Fonts\msmincho.ttc",
@@ -133,6 +134,7 @@ class GrblControlApp:
                     "z_feed": float(self.z_feed_var.get()),
                     "final_lift_mm": float(self.final_lift_var.get()),
                     "letter_spacing_factor": float(self.letter_spacing_var.get()),
+                    "proportional_spacing": bool(self.proportional_spacing_var.get()),
                     "draw_feed": float(self.draw_feed_var.get()),
                     "travel_feed": float(self.travel_feed_var.get()),
                     "font_path": self.font_var.get(),
@@ -401,7 +403,6 @@ class GrblControlApp:
             textvariable=self.letter_spacing_var,
             values=LETTER_SPACING_OPTIONS,
             width=6,
-            state="readonly",
         ).grid(row=2, column=1, padx=4, pady=2)
         self.fast_mode_var = tk.BooleanVar(value=bool(s["fast_mode"]))
         ttk.Checkbutton(char_frame, text="高速モード", variable=self.fast_mode_var).grid(
@@ -411,6 +412,10 @@ class GrblControlApp:
         ttk.Entry(char_frame, textvariable=self.simplify_tolerance_var, width=6).grid(
             row=3, column=1, padx=4, pady=2
         )
+        self.proportional_spacing_var = tk.BooleanVar(value=bool(s["proportional_spacing"]))
+        ttk.Checkbutton(
+            char_frame, text="TTF風可変幅", variable=self.proportional_spacing_var
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=2)
 
         speed_frame2 = ttk.LabelFrame(settings_row, text="送り速度(mm/min)")
         speed_frame2.pack(side="left", fill="y", padx=4)
@@ -1178,6 +1183,7 @@ class GrblControlApp:
             simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
             letter_spacing_factor=letter_spacing_factor,
             line_spacing_factor=line_spacing_factor,
+            proportional_spacing=bool(self.proportional_spacing_var.get()),
         )
         try:
             self.job_status_var.set("G-code生成中...")
@@ -1336,6 +1342,7 @@ class GrblControlApp:
             simplify_tolerance_mm=simplify_tolerance_mm if self.fast_mode_var.get() else None,
             letter_spacing_factor=letter_spacing_factor,
             line_spacing_factor=line_spacing_factor,
+            proportional_spacing=bool(self.proportional_spacing_var.get()),
         )
         self.job_status_var.set("シミュレーション生成中...")
         self.root.update_idletasks()
